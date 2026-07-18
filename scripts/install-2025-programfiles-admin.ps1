@@ -29,7 +29,14 @@ New-Item -ItemType Directory -Force -Path $quarantineRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $cacheBackupRoot | Out-Null
 
 if (Test-Path -LiteralPath $userPlugRoot -PathType Container) {
-    foreach ($name in @("AutoDimensionPlugin.vlb", "AutoDimensionPlugin.vwr", "AutoDimensionPlugin")) {
+    foreach ($name in @(
+        "AutoDimensionPlugin.vlb",
+        "AutoDimensionPlugin.vwr",
+        "AutoDimensionPlugin",
+        "AutoDimension.py",
+        "AutoDimension_Standalone.py",
+        "AutoDimension.vsm"
+    )) {
         $path = Join-Path $userPlugRoot $name
         if (Test-Path -LiteralPath $path) {
             Move-Item -LiteralPath $path -Destination (Join-Path $quarantineRoot $name) -Force
