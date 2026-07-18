@@ -11,3 +11,5 @@ out/
 *.ilk
 *.vwlibrary
 *.zip
+install-quarantine/
+plugin-cache-backup/
