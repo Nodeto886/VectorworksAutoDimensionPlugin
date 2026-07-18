@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <array>
+#include <fstream>
 #include <limits>
+#include <sstream>
 
 using namespace AutoDimensionPlugin;
 
@@ -16,6 +18,52 @@ namespace AutoDimensionPlugin
 	static const TXString kOverallHeight = "AD_OverallHeight";
 	static const TXString kOverallDepth = "AD_OverallDepth";
 	static const TXString kSourceUUIDParam = "SourceUUID";
+	static const char* kRuntimeTracePath = "C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-autodim-runtime-2025.txt";
+
+	static void WriteRuntimeTrace(const std::string& message)
+	{
+		std::ofstream trace(kRuntimeTracePath, std::ios::app);
+		if (trace.is_open()) {
+			trace << message << '\n';
+		}
+	}
+
+	static std::string FormatPoint(const WorldPt3& point)
+	{
+		std::ostringstream output;
+		output.precision(12);
+		output << '(' << point.x << ',' << point.y << ',' << point.z << ')';
+		return output.str();
+	}
+
+	static std::string DescribeObject(MCObjectHandle object)
+	{
+		if (!object) {
+			return "handle=null";
+		}
+
+		WorldCube bounds;
+		gSDK->GetObjectCube(object, bounds);
+		UuidStorage uuid;
+		gSDK->GetObjectUuidN(object, uuid);
+
+		std::ostringstream output;
+		output.precision(12);
+		output << "handle=" << reinterpret_cast<const void*>(object)
+			<< " type=" << gSDK->GetObjectTypeN(object)
+			<< " uuid=" << uuid.ToString().operator const char*()
+			<< " cube=[" << bounds.MinX() << ',' << bounds.MinY() << ',' << bounds.MinZ()
+			<< " -> " << bounds.MaxX() << ',' << bounds.MaxY() << ',' << bounds.MaxZ() << ']';
+		return output.str();
+	}
+
+	static const char* GetDimensionTraceName(const TXString& dimensionID)
+	{
+		if (dimensionID == kOverallWidth) return "OverallWidth";
+		if (dimensionID == kOverallHeight) return "OverallHeight";
+		if (dimensionID == kOverallDepth) return "OverallDepth";
+		return "Unknown";
+	}
 
 	struct SSourceBounds
 	{
@@ -287,19 +335,28 @@ EObjectEvent CAutoDimensionObj_EventSink::Recalculate()
 {
 	MCObjectHandle definitionObject = GetDefinitionObject(fhObject);
 	MCObjectHandle sourceObject = GetSourceObject(definitionObject);
+	WriteRuntimeTrace("recalculate proxy " + DescribeObject(fhObject));
 	if (!sourceObject || sourceObject == definitionObject) {
+		WriteRuntimeTrace("recalculate source resolution failed");
 		return kObjectEventNoErr;
 	}
+	WriteRuntimeTrace("recalculate source " + DescribeObject(sourceObject));
 
 	MCObjectHandle duplicate = gSDK->DuplicateObject(sourceObject);
 	if (duplicate) {
+		WriteRuntimeTrace("recalculate duplicate created " + DescribeObject(duplicate));
 		VWParametricObj parametric(definitionObject);
 		VWTransformMatrix objectToWorld;
 		parametric.GetObjectToWorldTransform(objectToWorld);
 		gSDK->TransformObject(duplicate, objectToWorld.GetInverted());
-		if (!gSDK->AddObjectToContainer(duplicate, fhObject)) {
+		const bool addedToProxy = gSDK->AddObjectToContainer(duplicate, fhObject);
+		WriteRuntimeTrace(std::string("recalculate add-to-proxy=") + (addedToProxy ? "true " : "false ") + DescribeObject(duplicate));
+		if (!addedToProxy) {
 			gSDK->DeleteObject(duplicate);
 		}
+	}
+	else {
+		WriteRuntimeTrace("recalculate duplicate failed");
 	}
 
 	return kObjectEventNoErr;
@@ -338,6 +395,7 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetSupportedTypes(EViewTypes 
 
 	SSourceBounds bounds;
 	if (!GetSourceBounds(fhObject, bounds)) {
+		WriteRuntimeTrace("supported-types bounds failed view=" + std::to_string(static_cast<int>(inView)));
 		return false;
 	}
 
@@ -357,6 +415,13 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetSupportedTypes(EViewTypes 
 		AddSupportedType(outvecTypes, kOverallDepth, "Overall Depth", VectorWorks::Extension::EAutoDimensionPlacement::eHorizontalTop);
 	}
 
+	std::ostringstream trace;
+	trace.precision(12);
+	trace << "supported-types view=" << static_cast<int>(inView)
+		<< " width=" << width << " height=" << height << " depth=" << depth
+		<< " count=" << outvecTypes.size();
+	WriteRuntimeTrace(trace.str());
+
 	return !outvecTypes.empty();
 }
 
@@ -369,10 +434,16 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetDimensionDefinitions(EView
 	WorldPt3 start;
 	WorldPt3 end;
 	if (!GetSourceBounds(fhObject, bounds) || !GetDimensionPoints(inView, instrDimID_UniversalName, bounds, start, end)) {
+		WriteRuntimeTrace(std::string("dimension-definition failed id=") + GetDimensionTraceName(instrDimID_UniversalName)
+			+ " view=" + std::to_string(static_cast<int>(inView)));
 		return false;
 	}
 
 	outvecDimensions.emplace_back(start, end, 0);
+	WriteRuntimeTrace(std::string("dimension-definition id=") + GetDimensionTraceName(instrDimID_UniversalName)
+		+ " view=" + std::to_string(static_cast<int>(inView))
+		+ " placement=" + std::to_string(static_cast<int>(inPlace))
+		+ " start=" + FormatPoint(start) + " end=" + FormatPoint(end));
 	return true;
 }
 
@@ -382,11 +453,15 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 	short overPart = 0;
 	SintptrT code = 0;
 	::GS_TrackTool(gCBP, sourceObject, overPart, code);
+	WriteRuntimeTrace("tool-complete track overPart=" + std::to_string(overPart)
+		+ " code=" + std::to_string(code) + " " + DescribeObject(sourceObject));
 	if (!sourceObject) {
 		sourceObject = gSDK->FirstSelectedObject();
+		WriteRuntimeTrace("tool-complete selection fallback " + DescribeObject(sourceObject));
 	}
 
 	if (!sourceObject || VWParametricObj::IsParametricObject(sourceObject, "KeeplAutoDimTestObj")) {
+		WriteRuntimeTrace("tool-complete rejected source");
 		gSDK->AlertInform("Click a symbol, lighting device, line, 2D object, or 3D object.");
 		return;
 	}
@@ -394,11 +469,14 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 	VWToolDefault_EventSink::HandleComplete();
 	MCObjectHandle proxyObject = this->GetLastCreated();
 	if (!proxyObject) {
+		WriteRuntimeTrace("tool-complete proxy creation failed");
 		return;
 	}
+	WriteRuntimeTrace("tool-complete proxy created " + DescribeObject(proxyObject));
 
 	UuidStorage sourceUUID;
 	if (!gSDK->GetObjectUuidN(sourceObject, sourceUUID) || sourceUUID.IsEmpty()) {
+		WriteRuntimeTrace("tool-complete source UUID failed");
 		gSDK->DeleteObject(proxyObject);
 		gSDK->AlertInform("The selected object could not be linked.");
 		return;
@@ -406,5 +484,6 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 
 	VWParametricObj parametric(proxyObject);
 	parametric.SetParamString(kSourceUUIDParam, sourceUUID.ToString());
+	WriteRuntimeTrace(std::string("tool-complete linked source_uuid=") + sourceUUID.ToString().operator const char*());
 	gSDK->ResetObject(proxyObject);
 }

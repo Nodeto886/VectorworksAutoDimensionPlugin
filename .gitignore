@@ -12,5 +12,6 @@ out/
 *.vwlibrary
 *.zip
 vw-load-trace-*.txt
+vw-autodim-runtime-*.txt
 install-quarantine/
 plugin-cache-backup/

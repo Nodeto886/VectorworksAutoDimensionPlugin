@@ -25,3 +25,25 @@ The dimensions are returned as `TAutoDimensionDefinition` values. Vectorworks / 
 ## Important distinction
 
 This plugin should not use a long-running TCP process. TCP can still exist in a different product for data exchange, but automatic dimensions should stay inside Vectorworks and be produced by SDK events.
+
+## Runtime API diagnostics
+
+The release builds include a temporary in-process diagnostic trace for API validation:
+
+- Vectorworks 2025: `vw-autodim-runtime-2025.txt`
+- Vectorworks 2026: `vw-autodim-runtime-2026.txt`
+
+The trace records picked object type and UUID, 3D bounds, proxy creation, object duplication, container insertion, Graphic Legend view requests, supported dimension counts, and returned dimension points.
+
+## Validation matrix
+
+- 2D line: horizontal, vertical, diagonal, rotated, and zero-length.
+- Open and closed 2D geometry: polygon, polyline, arc, rectangle, oval, and grouped geometry.
+- Symbols: rotated, mirrored, non-uniformly scaled, nested, and hybrid 2D/3D symbols.
+- Spotlight: Lighting Device objects with accessories and multiple view components.
+- 3D geometry: extrusion, sweep, mesh, generic solid, and rotated objects away from the ground plane.
+- Graphic Legend views: Top/Plan, Top, Front, Back, Left, and Right.
+- Lifecycle: source edit, source delete, duplicate, undo/redo, document reopen, layer/class visibility, and broken UUID recovery.
+- Performance: repeated Graphic Legend resets and large selections without recursive proxy creation.
+
+The first functional milestone validates overall width, height, and depth. Segment length, polyline vertex chains, and lighting-specific dimensions are separate geometry rules built after this matrix passes the overall-dimension flow.
