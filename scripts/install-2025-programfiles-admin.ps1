@@ -5,9 +5,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$pluginBaseName = "KeeplAutoDimTest"
 $sourceRoot = Join-Path $repoRoot "dist\2025"
-$sourceVlb = Join-Path $sourceRoot "AutoDimensionPlugin.vlb"
-$sourceVwr = Join-Path $sourceRoot "AutoDimensionPlugin.vwr"
+$sourceVlb = Join-Path $sourceRoot "$pluginBaseName.vlb"
+$sourceVwr = Join-Path $sourceRoot "$pluginBaseName.vwr"
 $appPlugRoot = Join-Path $VectorworksRoot "Plug-Ins"
 $userPlugRoot = Join-Path $env:APPDATA "Nemetschek\Vectorworks\2025\Plug-ins"
 $quarantineRoot = Join-Path $repoRoot ("install-quarantine\2025-user-" + (Get-Date -Format "yyyyMMddHHmmss"))
@@ -33,6 +34,8 @@ if (Test-Path -LiteralPath $userPlugRoot -PathType Container) {
         "AutoDimensionPlugin.vlb",
         "AutoDimensionPlugin.vwr",
         "AutoDimensionPlugin",
+        "KeeplAutoDimTest.vlb",
+        "KeeplAutoDimTest.vwr",
         "AutoDimension.py",
         "AutoDimension_Standalone.py",
         "AutoDimension.vsm"
@@ -51,8 +54,15 @@ if (Test-Path -LiteralPath $userPlugRoot -PathType Container) {
     }
 }
 
-Copy-Item -LiteralPath $sourceVlb -Destination (Join-Path $appPlugRoot "AutoDimensionPlugin.vlb") -Force
-Copy-Item -LiteralPath $sourceVwr -Destination (Join-Path $appPlugRoot "AutoDimensionPlugin.vwr") -Force
+foreach ($name in @("AutoDimensionPlugin.vlb", "AutoDimensionPlugin.vwr")) {
+    $legacyAppPath = Join-Path $appPlugRoot $name
+    if (Test-Path -LiteralPath $legacyAppPath -PathType Leaf) {
+        Move-Item -LiteralPath $legacyAppPath -Destination (Join-Path $quarantineRoot $name) -Force
+    }
+}
+
+Copy-Item -LiteralPath $sourceVlb -Destination (Join-Path $appPlugRoot "$pluginBaseName.vlb") -Force
+Copy-Item -LiteralPath $sourceVwr -Destination (Join-Path $appPlugRoot "$pluginBaseName.vwr") -Force
 
 Write-Host "Installed AutoDimensionPlugin 2025 to: $appPlugRoot"
 Write-Host "User duplicate files moved to: $quarantineRoot"

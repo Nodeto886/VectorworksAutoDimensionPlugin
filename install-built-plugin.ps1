@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PluginBaseName = "KeeplAutoDimTest"
 
 function Install-AutoDimensionPlugin {
     param(
@@ -22,8 +23,8 @@ function Install-AutoDimensionPlugin {
         $SourceRoot = Join-Path $PSScriptRoot "dist\$TargetVersion"
     }
 
-    $sourceVlb = Join-Path $SourceRoot "AutoDimensionPlugin.vlb"
-    $sourceVwr = Join-Path $SourceRoot "AutoDimensionPlugin.vwr"
+    $sourceVlb = Join-Path $SourceRoot "$PluginBaseName.vlb"
+    $sourceVwr = Join-Path $SourceRoot "$PluginBaseName.vwr"
 
     if (!(Test-Path -LiteralPath $sourceVlb)) {
         throw "Missing plugin binary: $sourceVlb"
@@ -36,8 +37,8 @@ function Install-AutoDimensionPlugin {
     $target = Join-Path $env:APPDATA "Nemetschek\Vectorworks\$TargetVersion\Plug-ins"
     New-Item -ItemType Directory -Force -Path $target | Out-Null
 
-    Copy-Item -LiteralPath $sourceVlb -Destination (Join-Path $target "AutoDimensionPlugin.vlb") -Force
-    Copy-Item -LiteralPath $sourceVwr -Destination (Join-Path $target "AutoDimensionPlugin.vwr") -Force
+    Copy-Item -LiteralPath $sourceVlb -Destination (Join-Path $target "$PluginBaseName.vlb") -Force
+    Copy-Item -LiteralPath $sourceVwr -Destination (Join-Path $target "$PluginBaseName.vwr") -Force
 
     Write-Host "Installed AutoDimensionPlugin $TargetVersion to: $target"
 }

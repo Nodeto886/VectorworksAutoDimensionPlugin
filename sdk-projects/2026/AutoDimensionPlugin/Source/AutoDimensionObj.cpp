@@ -6,8 +6,8 @@ using namespace AutoDimensionPlugin;
 
 namespace AutoDimensionPlugin
 {
-	static const TXString kCategoryUniversalName = "AutoDimensionPlugin";
-	static const TXString kCategoryLocalizedName = "Auto Dimension";
+	static const TXString kCategoryUniversalName = "KeeplAutoDimTestCategory";
+	static const TXString kCategoryLocalizedName = "Keepl AutoDim Test";
 	static const TXString kOverallWidth = "AD_OverallWidth";
 	static const TXString kOverallHeight = "AD_OverallHeight";
 	static const TXString kOverallDepth = "AD_OverallDepth";
@@ -18,7 +18,7 @@ namespace AutoDimensionPlugin
 
 	static SToolDef gToolDef = {
 		/*ToolType*/					eExtensionToolType_DefaultPoint,
-		/*ParametricName*/				"AutoDimensionObj",
+		/*ParametricName*/				"KeeplAutoDimTestObj",
 		/*PickAndUpdate*/				ToolDef::pickAndUpdate,
 		/*NeedScreenPlane*/				ToolDef::doesntNeedScreenPlane,
 		/*Need3DProjection*/			ToolDef::doesntNeed3DView,
@@ -27,14 +27,14 @@ namespace AutoDimensionPlugin
 		/*NeedPerspective*/				ToolDef::doesntNeedPerspective,
 		/*ShowScreenHints*/				ToolDef::showScreenHints,
 		/*NeedsPlanarContext*/			ToolDef::needsPlanarContext,
-		/*Message*/						{"AutoDimensionPlugin", "tool_message"},
+		/*Message*/						{"KeeplAutoDimTest", "tool_message"},
 		/*WaitMoveDistance*/			0,
 		/*ConstraintFlags*/				0,
 		/*BarDisplay*/					kToolBarDisplay_XYClLaZo,
 		/*MinimumCompatibleVersion*/		900,
-		/*Title*/						{"AutoDimensionPlugin", "tool_title"},
-		/*Category*/					{"AutoDimensionPlugin", "tool_category"},
-		/*HelpText*/					{"AutoDimensionPlugin", "tool_help"},
+		/*Title*/						{"KeeplAutoDimTest", "tool_title"},
+		/*Category*/					{"KeeplAutoDimTest", "tool_category"},
+		/*HelpText*/					{"KeeplAutoDimTest", "tool_help"},
 		/*VersionCreated*/				30,
 		/*VersoinModified*/				0,
 		/*VersoinRetired*/				0,
@@ -44,7 +44,7 @@ namespace AutoDimensionPlugin
 	};
 
 	static SParametricDef gParametricDef = {
-		/*LocalizedName*/				{"AutoDimensionPlugin", "localized_name"},
+		/*LocalizedName*/				{"KeeplAutoDimTest", "localized_name"},
 		/*SubType*/						kParametricSubType_Point,
 		/*ResetOnMove*/					false,
 		/*ResetOnRotate*/				false,
@@ -71,7 +71,7 @@ namespace AutoDimensionPlugin
 IMPLEMENT_VWParametricExtension(
 	/*Extension class*/	CExtAutoDimensionObj,
 	/*Event sink*/		CAutoDimensionObj_EventSink,
-	/*Universal name*/	"AutoDimensionObj",
+	/*Universal name*/	"KeeplAutoDimTestObj",
 	/*Version*/			1,
 	/*UUID*/			0xe18d62e6, 0x8995, 0x4f11, 0xaf, 0x9c, 0x96, 0x0c, 0x8f, 0x7c, 0x2d, 0x31 );
 
@@ -79,7 +79,7 @@ IMPLEMENT_VWParametricExtension(
 IMPLEMENT_VWToolExtension(
 	/*Extension class*/	CExtAutoDimensionObjDefTool,
 	/*Event sink*/		CAutoDimensionObjDefTool_EventSink,
-	/*Universal name*/	"AutoDimensionObjTool",
+	/*Universal name*/	"KeeplAutoDimTestObjTool",
 	/*Version*/			1,
 	/*UUID*/			0x062dc681, 0x5f7a, 0x417f, 0x8d, 0x72, 0x8e, 0x95, 0xd1, 0x4c, 0x9c, 0x8b );
 
@@ -106,7 +106,7 @@ CExtAutoDimensionObjDefTool::~CExtAutoDimensionObjDefTool()
 }
 
 CAutoDimensionObjDefTool_EventSink::CAutoDimensionObjDefTool_EventSink(IVWUnknown* parent)
-	: VWToolDefaultPoint_EventSink(parent, "AutoDimensionObj")
+	: VWToolDefaultPoint_EventSink(parent, "KeeplAutoDimTestObj")
 {
 }
 

@@ -8,7 +8,7 @@
 #include "StdAfx.h"
 #include "AutoDimensionObj.h"
 
-const char * DefaultPluginVWRIdentifier() { return "AutoDimensionPlugin"; } // Change this to the name of your plug-in
+const char * DefaultPluginVWRIdentifier() { return "KeeplAutoDimTest"; }
 
 
 //------------------------------------------------------------------
