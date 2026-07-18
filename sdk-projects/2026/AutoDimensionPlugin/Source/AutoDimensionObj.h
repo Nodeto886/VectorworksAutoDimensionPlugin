@@ -38,4 +38,11 @@ namespace AutoDimensionPlugin
 						CExtAutoDimensionObjDefTool(CallBackPtr cbp);
 		virtual			~CExtAutoDimensionObjDefTool();
 	};
+
+	class CAutoDimensionObjDefTool_EventSink : public VWToolDefaultPoint_EventSink
+	{
+	public:
+						CAutoDimensionObjDefTool_EventSink(IVWUnknown* parent);
+		virtual			~CAutoDimensionObjDefTool_EventSink();
+	};
 }

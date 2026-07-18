@@ -78,7 +78,7 @@ IMPLEMENT_VWParametricExtension(
 // {062DC681-5F7A-417F-8D72-8E95D14C9C8B}
 IMPLEMENT_VWToolExtension(
 	/*Extension class*/	CExtAutoDimensionObjDefTool,
-	/*Event sink*/		VWToolEmpty_EventSink,
+	/*Event sink*/		CAutoDimensionObjDefTool_EventSink,
 	/*Universal name*/	"AutoDimensionObjTool",
 	/*Version*/			1,
 	/*UUID*/			0x062dc681, 0x5f7a, 0x417f, 0x8d, 0x72, 0x8e, 0x95, 0xd1, 0x4c, 0x9c, 0x8b );
@@ -102,6 +102,15 @@ CExtAutoDimensionObjDefTool::CExtAutoDimensionObjDefTool(CallBackPtr cbp)
 }
 
 CExtAutoDimensionObjDefTool::~CExtAutoDimensionObjDefTool()
+{
+}
+
+CAutoDimensionObjDefTool_EventSink::CAutoDimensionObjDefTool_EventSink(IVWUnknown* parent)
+	: VWToolDefaultPoint_EventSink(parent, "AutoDimensionObj")
+{
+}
+
+CAutoDimensionObjDefTool_EventSink::~CAutoDimensionObjDefTool_EventSink()
 {
 }
 
