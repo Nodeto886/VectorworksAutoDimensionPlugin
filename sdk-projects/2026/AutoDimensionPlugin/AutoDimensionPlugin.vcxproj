@@ -99,7 +99,7 @@
     <PostBuildEvent />
     <PostBuildEvent>
       <Command>REM VWR Resource build script
-set VWR_INPUT=$(TargetName).vwr
+set VWR_INPUT=$(ProjectDir)$(TargetName).vwr
 set VWR_OUTPUT=$(TargetDir)$(TargetName).vwr
 set VWR_MODE=$(Configuration)
 set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\ToolsWin\BuildVWR\7z
@@ -151,7 +151,7 @@ set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDK
     <PostBuildEvent />
     <PostBuildEvent>
       <Command>REM VWR Resource build script
-set VWR_INPUT=$(TargetName).vwr
+set VWR_INPUT=$(ProjectDir)$(TargetName).vwr
 set VWR_OUTPUT=$(TargetDir)$(TargetName).vwr
 set VWR_MODE=$(Configuration)
 set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\ToolsWin\BuildVWR\7z

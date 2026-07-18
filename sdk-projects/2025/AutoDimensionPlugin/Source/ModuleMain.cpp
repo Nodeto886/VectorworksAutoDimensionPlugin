@@ -22,19 +22,6 @@ static void WriteKeeplLoadTrace(const char* message, Sint32 value = -1)
 	}
 }
 
-static Sint32 RegisterKeeplExtensions(void* moduleInfo)
-{
-	using namespace VectorWorks::Extension;
-
-	const Sint32 toolReply = ::GS_VWRegisterInterface(AutoDimensionPlugin::CExtAutoDimensionObjDefTool::_GetIID(), GROUPID_ExtensionTool, moduleInfo);
-	WriteKeeplLoadTrace("register tool result", toolReply);
-
-	const Sint32 objectReply = ::GS_VWRegisterInterface(AutoDimensionPlugin::CExtAutoDimensionObj::_GetIID(), GROUPID_ExtensionParametric, moduleInfo);
-	WriteKeeplLoadTrace("register object result", objectReply);
-
-	return toolReply != kVCOMError_NoError ? toolReply : objectReply;
-}
-
 const char * DefaultPluginVWRIdentifier() { return "KeeplAutoDimTest"; }
 
 
@@ -56,10 +43,6 @@ extern "C" Sint32 GS_EXTERNAL_ENTRY plugin_module_main(Sint32 action, void* modu
 
 	// initialize VCOM mechanizm
 	::GS_InitializeVCOM( cbp );
-
-	if ( action == kVCOMRegisterInterfaces ) {
-		return RegisterKeeplExtensions(moduleInfo);
-	}
 
 	Sint32	reply	= 0L;
 
