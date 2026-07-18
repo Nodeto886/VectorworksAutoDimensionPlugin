@@ -11,5 +11,6 @@ out/
 *.ilk
 *.vwlibrary
 *.zip
+vw-load-trace-*.txt
 install-quarantine/
 plugin-cache-backup/

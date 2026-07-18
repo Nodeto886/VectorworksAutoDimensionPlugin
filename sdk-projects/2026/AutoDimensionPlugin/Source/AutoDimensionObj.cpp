@@ -39,7 +39,7 @@ namespace AutoDimensionPlugin
 		/*VersoinModified*/				0,
 		/*VersoinRetired*/				0,
 		/*OverrideHelpID*/				"",
-		/*Icon Specifier*/				"",
+		/*Icon Specifier*/				"KeeplAutoDimTest/Images/KeeplAutoDimTestObjTool.png",
 		/*Cursor Specifier */			""
 	};
 
@@ -55,6 +55,7 @@ namespace AutoDimensionPlugin
 	};
 
 	static SParametricParamDef gArrParameters[] = {
+		{ "Enabled", {"KeeplAutoDimTest", "param1"}, "True", "True", kFieldBoolean, 0 },
 		{ "", {0,0}, "", "", EFieldStyle(0), 0 }
 	};
 
