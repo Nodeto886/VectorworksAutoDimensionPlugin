@@ -33,7 +33,7 @@ function Install-AutoDimensionPlugin {
         throw "Missing plugin resources: $sourceVwr"
     }
 
-    $target = Join-Path $env:APPDATA "Nemetschek\Vectorworks\$TargetVersion\Plug-ins\AutoDimensionPlugin"
+    $target = Join-Path $env:APPDATA "Nemetschek\Vectorworks\$TargetVersion\Plug-ins"
     New-Item -ItemType Directory -Force -Path $target | Out-Null
 
     Copy-Item -LiteralPath $sourceVlb -Destination (Join-Path $target "AutoDimensionPlugin.vlb") -Force
