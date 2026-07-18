@@ -44,5 +44,7 @@ namespace AutoDimensionPlugin
 	public:
 						CAutoDimensionObjDefTool_EventSink(IVWUnknown* parent);
 		virtual			~CAutoDimensionObjDefTool_EventSink();
+
+		virtual void	HandleComplete();
 	};
 }

@@ -2,6 +2,10 @@
 
 #include "AutoDimensionObj.h"
 
+#include <algorithm>
+#include <array>
+#include <limits>
+
 using namespace AutoDimensionPlugin;
 
 namespace AutoDimensionPlugin
@@ -11,10 +15,158 @@ namespace AutoDimensionPlugin
 	static const TXString kOverallWidth = "AD_OverallWidth";
 	static const TXString kOverallHeight = "AD_OverallHeight";
 	static const TXString kOverallDepth = "AD_OverallDepth";
+	static const TXString kSourceUUIDParam = "SourceUUID";
 
-	static constexpr double kObjectWidth = 1000.0;
-	static constexpr double kObjectHeight = 500.0;
-	static constexpr double kObjectDepth = 250.0;
+	struct SSourceBounds
+	{
+		double minX = std::numeric_limits<double>::max();
+		double minY = std::numeric_limits<double>::max();
+		double minZ = std::numeric_limits<double>::max();
+		double maxX = std::numeric_limits<double>::lowest();
+		double maxY = std::numeric_limits<double>::lowest();
+		double maxZ = std::numeric_limits<double>::lowest();
+
+		void Add(const VWPoint3D& point)
+		{
+			minX = std::min(minX, point.x);
+			minY = std::min(minY, point.y);
+			minZ = std::min(minZ, point.z);
+			maxX = std::max(maxX, point.x);
+			maxY = std::max(maxY, point.y);
+			maxZ = std::max(maxZ, point.z);
+		}
+
+		bool IsValid() const
+		{
+			return minX <= maxX && minY <= maxY && minZ <= maxZ;
+		}
+	};
+
+	static MCObjectHandle GetDefinitionObject(MCObjectHandle object)
+	{
+		MCObjectHandle proxyParent = gSDK->GetProxyParent(object);
+		return proxyParent ? proxyParent : object;
+	}
+
+	static MCObjectHandle GetSourceObject(MCObjectHandle object)
+	{
+		VWParametricObj parametric(GetDefinitionObject(object));
+		const TXString sourceUUID = parametric.GetParamString(kSourceUUIDParam);
+		if (sourceUUID.GetLength() == 0) {
+			return nullptr;
+		}
+
+		return gSDK->GetObjectByUuidN(UuidStorage(sourceUUID));
+	}
+
+	static bool GetSourceBounds(MCObjectHandle object, SSourceBounds& outBounds)
+	{
+		MCObjectHandle definitionObject = GetDefinitionObject(object);
+		MCObjectHandle sourceObject = GetSourceObject(definitionObject);
+		if (!sourceObject || sourceObject == definitionObject) {
+			return false;
+		}
+
+		WorldCube worldBounds;
+		gSDK->GetObjectCube(sourceObject, worldBounds);
+
+		VWParametricObj parametric(definitionObject);
+		VWTransformMatrix objectToWorld;
+		parametric.GetObjectToWorldTransform(objectToWorld);
+
+		const std::array<double, 2> xs = { worldBounds.MinX(), worldBounds.MaxX() };
+		const std::array<double, 2> ys = { worldBounds.MinY(), worldBounds.MaxY() };
+		const std::array<double, 2> zs = { worldBounds.MinZ(), worldBounds.MaxZ() };
+		for (double x : xs) {
+			for (double y : ys) {
+				for (double z : zs) {
+					outBounds.Add(objectToWorld.InversePointTransform(VWPoint3D(x, y, z)));
+				}
+			}
+		}
+
+		return outBounds.IsValid();
+	}
+
+	static bool IsTopView(EViewTypes view)
+	{
+		return view == EViewTypes::Top || view == EViewTypes::Bottom ||
+			view == EViewTypes::TopBottomCut || view == EViewTypes::TopPlan ||
+			view == EViewTypes::NotSet;
+	}
+
+	static bool IsSideView(EViewTypes view)
+	{
+		return view == EViewTypes::Left || view == EViewTypes::Right || view == EViewTypes::LeftRightCut;
+	}
+
+	static void GetViewLengths(EViewTypes view, const SSourceBounds& bounds, double& outWidth, double& outHeight, double& outDepth)
+	{
+		const double sizeX = bounds.maxX - bounds.minX;
+		const double sizeY = bounds.maxY - bounds.minY;
+		const double sizeZ = bounds.maxZ - bounds.minZ;
+
+		if (IsTopView(view)) {
+			outWidth = sizeX;
+			outHeight = sizeY;
+			outDepth = sizeZ;
+		}
+		else if (IsSideView(view)) {
+			outWidth = sizeY;
+			outHeight = sizeZ;
+			outDepth = sizeX;
+		}
+		else {
+			outWidth = sizeX;
+			outHeight = sizeZ;
+			outDepth = sizeY;
+		}
+	}
+
+	static bool GetDimensionPoints(EViewTypes view, const TXString& dimensionID, const SSourceBounds& bounds, WorldPt3& outStart, WorldPt3& outEnd)
+	{
+		if (dimensionID == kOverallWidth) {
+			if (IsSideView(view)) {
+				outStart = WorldPt3(bounds.minX, bounds.minY, bounds.minZ);
+				outEnd = WorldPt3(bounds.minX, bounds.maxY, bounds.minZ);
+			}
+			else {
+				outStart = WorldPt3(bounds.minX, bounds.minY, bounds.minZ);
+				outEnd = WorldPt3(bounds.maxX, bounds.minY, bounds.minZ);
+			}
+			return true;
+		}
+
+		if (dimensionID == kOverallHeight) {
+			if (IsTopView(view)) {
+				outStart = WorldPt3(bounds.maxX, bounds.minY, bounds.minZ);
+				outEnd = WorldPt3(bounds.maxX, bounds.maxY, bounds.minZ);
+			}
+			else {
+				outStart = WorldPt3(bounds.maxX, bounds.minY, bounds.minZ);
+				outEnd = WorldPt3(bounds.maxX, bounds.minY, bounds.maxZ);
+			}
+			return true;
+		}
+
+		if (dimensionID == kOverallDepth) {
+			if (IsTopView(view)) {
+				outStart = WorldPt3(bounds.minX, bounds.maxY, bounds.minZ);
+				outEnd = WorldPt3(bounds.minX, bounds.maxY, bounds.maxZ);
+			}
+			else if (IsSideView(view)) {
+				outStart = WorldPt3(bounds.minX, bounds.maxY, bounds.maxZ);
+				outEnd = WorldPt3(bounds.maxX, bounds.maxY, bounds.maxZ);
+			}
+			else {
+				outStart = WorldPt3(bounds.minX, bounds.minY, bounds.maxZ);
+				outEnd = WorldPt3(bounds.minX, bounds.maxY, bounds.maxZ);
+			}
+			return true;
+		}
+
+		return false;
+	}
 
 	static SToolDef gToolDef = {
 		/*ToolType*/					eExtensionToolType_DefaultPoint,
@@ -27,14 +179,14 @@ namespace AutoDimensionPlugin
 		/*NeedPerspective*/				ToolDef::doesntNeedPerspective,
 		/*ShowScreenHints*/				ToolDef::showScreenHints,
 		/*NeedsPlanarContext*/			ToolDef::needsPlanarContext,
-		/*Message*/						{"KeeplAutoDimTest", "tool_message"},
+		/*Message*/						{"KeeplAutoDim", "tool_message"},
 		/*WaitMoveDistance*/			0,
 		/*ConstraintFlags*/				0,
 		/*BarDisplay*/					kToolBarDisplay_XYClLaZo,
 		/*MinimumCompatibleVersion*/		900,
-		/*Title*/						{"KeeplAutoDimTest", "tool_title"},
-		/*Category*/					{"KeeplAutoDimTest", "tool_category"},
-		/*HelpText*/					{"KeeplAutoDimTest", "tool_help"},
+		/*Title*/						{"KeeplAutoDim", "tool_title"},
+		/*Category*/					{"KeeplAutoDim", "tool_category"},
+		/*HelpText*/					{"KeeplAutoDim", "tool_help"},
 		/*VersionCreated*/				30,
 		/*VersoinModified*/				0,
 		/*VersoinRetired*/				0,
@@ -44,7 +196,7 @@ namespace AutoDimensionPlugin
 	};
 
 	static SParametricDef gParametricDef = {
-		/*LocalizedName*/				{"KeeplAutoDimTest", "localized_name"},
+		/*LocalizedName*/				{"KeeplAutoDim", "localized_name"},
 		/*SubType*/						kParametricSubType_Point,
 		/*ResetOnMove*/					false,
 		/*ResetOnRotate*/				false,
@@ -55,7 +207,8 @@ namespace AutoDimensionPlugin
 	};
 
 	static SParametricParamDef gArrParameters[] = {
-		{ "Enabled", {"KeeplAutoDimTest", "param1"}, "True", "True", kFieldBoolean, 0 },
+		{ "SourceUUID", {"KeeplAutoDim", "source_uuid"}, "", "", kFieldText, 0 },
+		{ "Enabled", {"KeeplAutoDim", "param1"}, "True", "True", kFieldBoolean, 0 },
 		{ "", {0,0}, "", "", EFieldStyle(0), 0 }
 	};
 
@@ -132,12 +285,22 @@ EObjectEvent CAutoDimensionObj_EventSink::OnInitXProperties(CodeRefID objectID)
 
 EObjectEvent CAutoDimensionObj_EventSink::Recalculate()
 {
-	VWPolygon2DObj rect;
-	rect.AddVertex(VWPoint2D(0.0, 0.0));
-	rect.AddVertex(VWPoint2D(kObjectWidth, 0.0));
-	rect.AddVertex(VWPoint2D(kObjectWidth, kObjectHeight));
-	rect.AddVertex(VWPoint2D(0.0, kObjectHeight));
-	rect.SetClosed(true);
+	MCObjectHandle definitionObject = GetDefinitionObject(fhObject);
+	MCObjectHandle sourceObject = GetSourceObject(definitionObject);
+	if (!sourceObject || sourceObject == definitionObject) {
+		return kObjectEventNoErr;
+	}
+
+	MCObjectHandle duplicate = gSDK->DuplicateObject(sourceObject);
+	if (duplicate) {
+		VWParametricObj parametric(definitionObject);
+		VWTransformMatrix objectToWorld;
+		parametric.GetObjectToWorldTransform(objectToWorld);
+		gSDK->TransformObject(duplicate, objectToWorld.GetInverted());
+		if (!gSDK->AddObjectToContainer(duplicate, fhObject)) {
+			gSDK->DeleteObject(duplicate);
+		}
+	}
 
 	return kObjectEventNoErr;
 }
@@ -171,36 +334,77 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetLocalizedTypeName(const TX
 
 bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetSupportedTypes(EViewTypes inView, std::vector<VectorWorks::Extension::TAutoDimensionTypeInfo>& outvecTypes)
 {
-	(void)inView;
 	outvecTypes.clear();
 
-	AddSupportedType(outvecTypes, kOverallWidth, "Overall Width", VectorWorks::Extension::EAutoDimensionPlacement::eHorizontalBottom);
-	AddSupportedType(outvecTypes, kOverallHeight, "Overall Height", VectorWorks::Extension::EAutoDimensionPlacement::eVerticalRight);
-	AddSupportedType(outvecTypes, kOverallDepth, "Overall Depth", VectorWorks::Extension::EAutoDimensionPlacement::eHorizontalTop);
+	SSourceBounds bounds;
+	if (!GetSourceBounds(fhObject, bounds)) {
+		return false;
+	}
 
-	return true;
+	double width = 0.0;
+	double height = 0.0;
+	double depth = 0.0;
+	GetViewLengths(inView, bounds, width, height, depth);
+	constexpr double kMinimumDimension = 1e-6;
+
+	if (width > kMinimumDimension) {
+		AddSupportedType(outvecTypes, kOverallWidth, "Overall Width", VectorWorks::Extension::EAutoDimensionPlacement::eHorizontalBottom);
+	}
+	if (height > kMinimumDimension) {
+		AddSupportedType(outvecTypes, kOverallHeight, "Overall Height", VectorWorks::Extension::EAutoDimensionPlacement::eVerticalRight);
+	}
+	if (depth > kMinimumDimension) {
+		AddSupportedType(outvecTypes, kOverallDepth, "Overall Depth", VectorWorks::Extension::EAutoDimensionPlacement::eHorizontalTop);
+	}
+
+	return !outvecTypes.empty();
 }
 
 bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetDimensionDefinitions(EViewTypes inView, const TXString& instrDimID_UniversalName, VectorWorks::Extension::EAutoDimensionPlacement inPlace, std::vector<VectorWorks::Extension::TAutoDimensionDefinition>& outvecDimensions)
 {
-	(void)inView;
 	(void)inPlace;
 	outvecDimensions.clear();
 
-	if (instrDimID_UniversalName == kOverallWidth) {
-		outvecDimensions.emplace_back(WorldPt3(0.0, 0.0, 0.0), WorldPt3(kObjectWidth, 0.0, 0.0), 0);
-		return true;
+	SSourceBounds bounds;
+	WorldPt3 start;
+	WorldPt3 end;
+	if (!GetSourceBounds(fhObject, bounds) || !GetDimensionPoints(inView, instrDimID_UniversalName, bounds, start, end)) {
+		return false;
 	}
 
-	if (instrDimID_UniversalName == kOverallHeight) {
-		outvecDimensions.emplace_back(WorldPt3(kObjectWidth, 0.0, 0.0), WorldPt3(kObjectWidth, kObjectHeight, 0.0), 0);
-		return true;
+	outvecDimensions.emplace_back(start, end, 0);
+	return true;
+}
+
+void CAutoDimensionObjDefTool_EventSink::HandleComplete()
+{
+	MCObjectHandle sourceObject = nullptr;
+	short overPart = 0;
+	SintptrT code = 0;
+	::GS_TrackTool(gCBP, sourceObject, overPart, code);
+	if (!sourceObject) {
+		sourceObject = gSDK->FirstSelectedObject();
 	}
 
-	if (instrDimID_UniversalName == kOverallDepth) {
-		outvecDimensions.emplace_back(WorldPt3(0.0, kObjectHeight, 0.0), WorldPt3(0.0, kObjectHeight, kObjectDepth), 0);
-		return true;
+	if (!sourceObject || VWParametricObj::IsParametricObject(sourceObject, "KeeplAutoDimTestObj")) {
+		gSDK->AlertInform("Click a symbol, lighting device, line, 2D object, or 3D object.");
+		return;
 	}
 
-	return false;
+	VWToolDefault_EventSink::HandleComplete();
+	MCObjectHandle proxyObject = this->GetLastCreated();
+	if (!proxyObject) {
+		return;
+	}
+
+	UuidStorage sourceUUID;
+	if (!gSDK->GetObjectUuidN(sourceObject, sourceUUID) || sourceUUID.IsEmpty()) {
+		gSDK->DeleteObject(proxyObject);
+		gSDK->AlertInform("The selected object could not be linked.");
+		return;
+	}
+
+	VWParametricObj parametric(proxyObject);
+	parametric.SetParamString(kSourceUUIDParam, sourceUUID.ToString());
+	gSDK->ResetObject(proxyObject);
 }

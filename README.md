@@ -14,24 +14,27 @@
   - `dist/2025/AutoDimensionPlugin.vwr`
   - `dist/2026/AutoDimensionPlugin.vlb`
   - `dist/2026/AutoDimensionPlugin.vwr`
-- 插件注册了 `AutoDimensionObj` 参数对象和 `AutoDimensionObjTool` 默认工具。
-- 当前对象绘制一个固定 `1000 x 500` 矩形，并返回 `Overall Width`、`Overall Height`、`Overall Depth` 三类自动尺寸定义。
+- 插件注册了 `KeeplAutoDimTestObj` 参数对象和 `KeeplAutoDimTestObjTool` 默认工具。
+- 工具点击现有对象后创建关联代理，并通过 UUID 读取源对象。支持符号、灯具、线段、开放/封闭二维对象和三维对象。
+- 代理复制源对象真实图形，并按顶视图、前视图和侧视图返回 `Overall Width`、`Overall Height`、`Overall Depth`。
 
-## 还没完成的部分
+## Vectorworks 验证
 
-这个版本是官方 Auto-dimension SDK 骨架和最小可运行对象，不是最终智能识别真实对象轮廓的版本。
+官方 Auto-dimension 回调只能由参数化对象实现，不能直接注入普通 Vectorworks 对象。因此工具会在源对象位置创建一个关联代理，图形图例应使用该代理。
 
-必须在 Vectorworks 里验证后，才能算真正完成：
+当前版本需要在 Vectorworks 里验证：
 
 1. 安装插件到 Vectorworks 用户插件目录。
 2. 重启 Vectorworks。
-3. 在工作空间里添加或调用 `AutoDimensionObjTool`。
-4. 插入 `AutoDimensionObj`。
-5. 在 Graphic Legend / 自动尺寸设置中确认出现：
+3. 在工作空间里添加或调用 `Keepl Auto Dimension`。
+4. 点击一个符号、灯具、线段、二维对象或三维对象，确认生成的代理显示源对象图形。
+5. 用代理创建 Graphic Legend，并在自动尺寸设置中确认出现：
    - `Overall Width`
    - `Overall Height`
    - `Overall Depth`
-6. 确认尺寸随对象显示和视图行为正常。
+6. 分别确认顶、前、侧视图的尺寸轴向正确。
+
+逐段线长、多段线节点尺寸和灯具专用尺寸规则将在总体尺寸验证通过后继续添加。
 
 ## 构建
 
