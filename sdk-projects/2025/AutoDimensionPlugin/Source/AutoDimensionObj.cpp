@@ -65,6 +65,48 @@ namespace AutoDimensionPlugin
 		return "Unknown";
 	}
 
+	static bool IsSupportedSource(MCObjectHandle object)
+	{
+		return object && !VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj");
+	}
+
+	static bool LinkProxyToSource(MCObjectHandle proxyObject, MCObjectHandle sourceObject)
+	{
+		UuidStorage sourceUUID;
+		if (!proxyObject || !sourceObject || !gSDK->GetObjectUuidN(sourceObject, sourceUUID) || sourceUUID.IsEmpty()) {
+			WriteRuntimeTrace("link-proxy source UUID failed");
+			return false;
+		}
+
+		VWParametricObj parametric(proxyObject);
+		parametric.SetParamString(kSourceUUIDParam, sourceUUID.ToString());
+		WriteRuntimeTrace(std::string("link-proxy source_uuid=") + sourceUUID.ToString().operator const char*());
+		gSDK->ResetObject(proxyObject);
+		return true;
+	}
+
+	static MCObjectHandle CreateLinkedProxy(MCObjectHandle sourceObject)
+	{
+		if (!IsSupportedSource(sourceObject)) {
+			return nullptr;
+		}
+
+		WorldCube bounds;
+		gSDK->GetObjectCube(sourceObject, bounds);
+		VWParametricObj proxy("KeeplAutoDimTestObj", VWPoint2D(bounds.MinX(), bounds.MinY()));
+		MCObjectHandle proxyObject = proxy;
+		WriteRuntimeTrace("create-linked-proxy source " + DescribeObject(sourceObject));
+		if (!LinkProxyToSource(proxyObject, sourceObject)) {
+			if (proxyObject) {
+				gSDK->DeleteObject(proxyObject);
+			}
+			return nullptr;
+		}
+
+		WriteRuntimeTrace("create-linked-proxy result " + DescribeObject(proxyObject));
+		return proxyObject;
+	}
+
 	struct SSourceBounds
 	{
 		double minX = std::numeric_limits<double>::max();
@@ -447,8 +489,31 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetDimensionDefinitions(EView
 	return true;
 }
 
+bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
+{
+	fSelectionProxyCreated = false;
+	const bool result = VWToolDefaultPoint_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
+	MCObjectHandle selectedObject = gSDK->FirstSelectedObject();
+	if (IsSupportedSource(selectedObject)) {
+		fSelectionProxyCreated = CreateLinkedProxy(selectedObject) != nullptr;
+		WriteRuntimeTrace(std::string("tool-setup selection-proxy=") + (fSelectionProxyCreated ? "true" : "false"));
+	}
+	return result;
+}
+
+void CAutoDimensionObjDefTool_EventSink::DoSetDown(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
+{
+	VWToolDefaultPoint_EventSink::DoSetDown(bRestore, pModeBarInitProvider);
+	fSelectionProxyCreated = false;
+}
+
 void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 {
+	if (fSelectionProxyCreated) {
+		WriteRuntimeTrace("tool-complete skipped; selection proxy already created");
+		return;
+	}
+
 	MCObjectHandle sourceObject = nullptr;
 	short overPart = 0;
 	SintptrT code = 0;
@@ -460,7 +525,7 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		WriteRuntimeTrace("tool-complete selection fallback " + DescribeObject(sourceObject));
 	}
 
-	if (!sourceObject || VWParametricObj::IsParametricObject(sourceObject, "KeeplAutoDimTestObj")) {
+	if (!IsSupportedSource(sourceObject)) {
 		WriteRuntimeTrace("tool-complete rejected source");
 		gSDK->AlertInform("Click a symbol, lighting device, line, 2D object, or 3D object.");
 		return;
@@ -474,16 +539,10 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 	}
 	WriteRuntimeTrace("tool-complete proxy created " + DescribeObject(proxyObject));
 
-	UuidStorage sourceUUID;
-	if (!gSDK->GetObjectUuidN(sourceObject, sourceUUID) || sourceUUID.IsEmpty()) {
+	if (!LinkProxyToSource(proxyObject, sourceObject)) {
 		WriteRuntimeTrace("tool-complete source UUID failed");
 		gSDK->DeleteObject(proxyObject);
 		gSDK->AlertInform("The selected object could not be linked.");
 		return;
 	}
-
-	VWParametricObj parametric(proxyObject);
-	parametric.SetParamString(kSourceUUIDParam, sourceUUID.ToString());
-	WriteRuntimeTrace(std::string("tool-complete linked source_uuid=") + sourceUUID.ToString().operator const char*());
-	gSDK->ResetObject(proxyObject);
 }

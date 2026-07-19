@@ -45,6 +45,11 @@ namespace AutoDimensionPlugin
 						CAutoDimensionObjDefTool_EventSink(IVWUnknown* parent);
 		virtual			~CAutoDimensionObjDefTool_EventSink();
 
+		virtual bool	DoSetUp(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider);
+		virtual void	DoSetDown(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider);
 		virtual void	HandleComplete();
+
+	private:
+		bool			fSelectionProxyCreated = false;
 	};
 }
