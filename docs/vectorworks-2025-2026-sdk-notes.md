@@ -33,7 +33,7 @@ The release builds include a temporary in-process diagnostic trace for API valid
 - Vectorworks 2025: `vw-autodim-runtime-2025.txt`
 - Vectorworks 2026: `vw-autodim-runtime-2026.txt`
 
-The trace records picked object type and UUID, 3D bounds, proxy creation, object duplication, container insertion, Graphic Legend view requests, supported dimension counts, and returned dimension points.
+The trace records picked object type and UUID, 3D bounds, proxy creation, object duplication, container insertion, Graphic Legend view requests, supported dimension counts, and returned dimension points. The direct tool also logs traversed object, point, straight-segment, and detail-segment counts, truncation, dominant axis, oriented extents, and every created dimension handle.
 
 ## Validation matrix
 
@@ -50,4 +50,6 @@ For the first interactive test, select the source object before activating the t
 
 The ordinary tool now treats a 2D line as a special measured primitive. It reads the line's real endpoints with `GetEndPoints`, creates horizontal and vertical projection dimensions, creates an aligned true-length dimension with `CreateLinearDimension`, and creates the acute angle from the horizontal reference with `CreateAngleDimension`.
 
-Overall width, height, and depth remain the fallback for symbols, lighting devices, open/closed 2D geometry, and 3D objects. Polyline vertex chains, rotated-symbol local axes, and lighting-specific dimensions remain separate geometry rules.
+The direct tool uses `ForEachPolyEdge` for polygon and polyline edges, `FirstMemberObj` for groups and parametric generated geometry, and `GetDefinition` plus entity matrices for nested symbol instances. Open paths add at most three longest straight-edge dimensions. Closed paths, groups, symbols, and lighting devices add oriented overall width, height, and a dominant-axis angle only when the derived axis is meaningfully rotated.
+
+Overall projected width and height remain the fallback for curves, meshes, generic solids, and geometry that reaches a traversal limit. True 3D view-depth measurement and lighting-field-specific measurement points remain separate rules.

@@ -1,6 +1,7 @@
 #include "StdAfx.h"
 
 #include "AutoDimensionObj.h"
+#include "../../../../include/vwad/SDKComplexGeometry.h"
 
 #include <algorithm>
 #include <array>
@@ -93,15 +94,12 @@ namespace AutoDimensionPlugin
 		double angleDegrees = 0.0;
 	};
 
-	static bool GetLineMeasurement(MCObjectHandle object, SLineMeasurement& outMeasurement)
+	static bool BuildLineMeasurement(const WorldPt& start, const WorldPt& end, SLineMeasurement& outMeasurement)
 	{
-		if (!object || gSDK->GetObjectTypeN(object) != kLineNode) {
-			return false;
-		}
-
-		gSDK->GetEndPoints(object, outMeasurement.start, outMeasurement.end);
-		outMeasurement.dx = outMeasurement.end.x - outMeasurement.start.x;
-		outMeasurement.dy = outMeasurement.end.y - outMeasurement.start.y;
+		outMeasurement.start = start;
+		outMeasurement.end = end;
+		outMeasurement.dx = end.x - start.x;
+		outMeasurement.dy = end.y - start.y;
 		outMeasurement.length = std::hypot(outMeasurement.dx, outMeasurement.dy);
 		if (outMeasurement.length <= kGeometryTolerance) {
 			return false;
@@ -111,6 +109,18 @@ namespace AutoDimensionPlugin
 			std::abs(outMeasurement.dy),
 			std::abs(outMeasurement.dx)) * 180.0 / kPi;
 		return true;
+	}
+
+	static bool GetLineMeasurement(MCObjectHandle object, SLineMeasurement& outMeasurement)
+	{
+		if (!object || gSDK->GetObjectTypeN(object) != kLineNode) {
+			return false;
+		}
+
+		WorldPt start;
+		WorldPt end;
+		gSDK->GetEndPoints(object, start, end);
+		return BuildLineMeasurement(start, end, outMeasurement);
 	}
 
 	static bool GetLineAngleDefinition(const SLineMeasurement& line, WorldCoord referenceLength, WorldPt& outCenter, WorldPt& outP1, WorldPt& outP2)
@@ -202,6 +212,28 @@ namespace AutoDimensionPlugin
 		const WorldPt rightTop(bounds.MaxX(), bounds.MaxY());
 		SLineMeasurement lineMeasurement;
 		const bool hasLineMeasurement = GetLineMeasurement(sourceObject, lineMeasurement);
+		ComplexGeometry::SCollection geometry;
+		ComplexGeometry::SDominantAxis dominantAxis;
+		if (!hasLineMeasurement) {
+			geometry = ComplexGeometry::Collect(sourceObject);
+			ComplexGeometry::FindDominantAxis(geometry, dominantAxis);
+
+			std::ostringstream geometryTrace;
+			geometryTrace.precision(12);
+			geometryTrace << "dimension-tool geometry objects=" << geometry.visitedObjectCount
+				<< " points=" << geometry.points.size()
+				<< " segments=" << geometry.segments.size()
+				<< " detailSegments=" << geometry.detailSegments.size()
+				<< " openPath=" << (geometry.sourceIsOpenPath ? "true" : "false")
+				<< " truncated=" << (geometry.truncated ? "true" : "false")
+				<< " dominant=" << (dominantAxis.valid ? "true" : "false");
+			if (dominantAxis.valid) {
+				geometryTrace << " direction=" << FormatPoint(dominantAxis.direction)
+					<< " foldedAngleDegrees=" << dominantAxis.foldedAngleDegrees
+					<< " supportLength=" << dominantAxis.supportingLength;
+			}
+			WriteRuntimeTrace(geometryTrace.str());
+		}
 		if (hasLineMeasurement) {
 			std::ostringstream lineTrace;
 			lineTrace.precision(12);
@@ -241,6 +273,72 @@ namespace AutoDimensionPlugin
 			WorldPt angleP2;
 			if (GetLineAngleDefinition(lineMeasurement, offset, angleCenter, angleP1, angleP2)) {
 				AddAngleDimension(angleCenter, angleP1, angleP2, offset * 1.25, "angle", createdCount);
+			}
+		}
+		else if (!hasLineMeasurement && dominantAxis.valid) {
+			if (geometry.sourceIsOpenPath) {
+				std::vector<ComplexGeometry::SMeasuredSegment> details = geometry.detailSegments;
+				std::sort(details.begin(), details.end(), [](const ComplexGeometry::SMeasuredSegment& a, const ComplexGeometry::SMeasuredSegment& b) {
+					return a.length > b.length;
+				});
+				const size_t detailCount = std::min<size_t>(3, details.size());
+				for (size_t index = 0; index < detailCount; ++index) {
+					const ComplexGeometry::SMeasuredSegment& segment = details[index];
+					const Vector2 direction(
+						(segment.end.x - segment.start.x) / segment.length,
+						(segment.end.y - segment.start.y) / segment.length);
+					AddLinearDimension(
+						segment.start,
+						segment.end,
+						-offset * (0.55 + static_cast<double>(index) * 0.35),
+						direction,
+						kLinearDimensionTypeAligned,
+						"open-path-segment",
+						createdCount);
+				}
+			}
+			else if (dominantAxis.foldedAngleDegrees > 2.0) {
+				ComplexGeometry::SOrientedBounds orientedBounds;
+				if (ComplexGeometry::CalculateOrientedBounds(geometry, dominantAxis, orientedBounds)) {
+					std::ostringstream orientedTrace;
+					orientedTrace.precision(12);
+					orientedTrace << "dimension-tool oriented width=" << orientedBounds.width
+						<< " height=" << orientedBounds.height;
+					WriteRuntimeTrace(orientedTrace.str());
+
+					if (orientedBounds.width > kGeometryTolerance) {
+						AddLinearDimension(
+							orientedBounds.widthStart,
+							orientedBounds.widthEnd,
+							-offset * 0.75,
+							Vector2(dominantAxis.direction.x, dominantAxis.direction.y),
+							kLinearDimensionTypeAligned,
+							"oriented-width",
+							createdCount);
+					}
+					if (orientedBounds.height > kGeometryTolerance) {
+						AddLinearDimension(
+							orientedBounds.heightStart,
+							orientedBounds.heightEnd,
+							offset * 0.75,
+							Vector2(-dominantAxis.direction.y, dominantAxis.direction.x),
+							kLinearDimensionTypeAligned,
+							"oriented-height",
+							createdCount);
+					}
+				}
+			}
+
+			if (dominantAxis.foldedAngleDegrees > 2.0) {
+				SLineMeasurement dominantMeasurement;
+				if (BuildLineMeasurement(dominantAxis.referenceSegment.start, dominantAxis.referenceSegment.end, dominantMeasurement)) {
+					WorldPt angleCenter;
+					WorldPt angleP1;
+					WorldPt angleP2;
+					if (GetLineAngleDefinition(dominantMeasurement, offset, angleCenter, angleP1, angleP2)) {
+						AddAngleDimension(angleCenter, angleP1, angleP2, offset * 1.25, "dominant-angle", createdCount);
+					}
+				}
 			}
 		}
 		if (createdCount > 0) {
