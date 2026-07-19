@@ -46,6 +46,6 @@ The trace records picked object type and UUID, 3D bounds, proxy creation, object
 - Lifecycle: source edit, source delete, duplicate, undo/redo, document reopen, layer/class visibility, and broken UUID recovery.
 - Performance: repeated Graphic Legend resets and large selections without recursive proxy creation.
 
-For the first interactive test, select the source object before activating the tool. This uses the selection path and avoids relying on cursor hit-testing; the click path remains available for objects that are not preselected.
+For the first interactive test, select the source object before activating the tool. The ordinary tool creates linear dimension objects directly and does not duplicate the source object; the click path remains available for objects that are not preselected.
 
 The first functional milestone validates overall width, height, and depth. Segment length, polyline vertex chains, and lighting-specific dimensions are separate geometry rules built after this matrix passes the overall-dimension flow.

@@ -14,28 +14,25 @@
   - `dist/2025/AutoDimensionPlugin.vwr`
   - `dist/2026/AutoDimensionPlugin.vlb`
   - `dist/2026/AutoDimensionPlugin.vwr`
-- 插件注册了 `KeeplAutoDimTestObj` 参数对象和 `KeeplAutoDimTestObjTool` 默认工具。
-- 工具点击现有对象后创建关联代理，并通过 UUID 读取源对象。支持符号、灯具、线段、开放/封闭二维对象和三维对象。
-- 代理复制源对象真实图形，并按顶视图、前视图和侧视图返回 `Overall Width`、`Overall Height`、`Overall Depth`。
+- 插件注册了 `KeeplAutoDimTestObj` 参数对象和 `KeeplAutoDimSelectionTool` 普通工具。
+- 工具对选中的现有对象直接创建 Vectorworks 尺寸对象，不复制源图形。支持符号、灯具、线段、开放/封闭二维对象和三维对象的总体水平/垂直尺寸。
+- 参数对象仍保留官方 Auto-dimension 回调，用于验证 Graphic Legend 对参数化对象的支持；普通对象的主流程是直接创建尺寸。
 
 ## Vectorworks 验证
 
-官方 Auto-dimension 回调只能由参数化对象实现，不能直接注入普通 Vectorworks 对象。因此工具会在源对象位置创建一个关联代理，图形图例应使用该代理。
+官方 Auto-dimension 回调只能由参数化对象实现，不能直接注入普通 Vectorworks 对象。因此普通对象使用 SDK 的 `CreateLinearDimension` 直接生成尺寸对象。
 
 当前版本需要在 Vectorworks 里验证：
 
 1. 安装插件到 Vectorworks 用户插件目录。
 2. 重启 Vectorworks。
 3. 在工作空间里添加或调用 `Keepl Auto Dimension`。
-4. 推荐先选中一个符号、灯具、线段、二维对象或三维对象，再激活工具；插件会立即生成代理。没有预选对象时，也可以在绘图区点击对象。
-5. 确认生成的代理显示源对象图形。
-6. 用代理创建 Graphic Legend，并在自动尺寸设置中确认出现：
-   - `Overall Width`
-   - `Overall Height`
-   - `Overall Depth`
+4. 推荐先选中一个符号、灯具、线段、二维对象或三维对象，再激活工具；插件会立即生成尺寸。没有预选对象时，也可以在绘图区点击对象。
+5. 确认源对象没有被复制，只新增水平/垂直尺寸对象。
+6. 确认尺寸文字、箭头、撤销和重做正常。
 7. 分别确认顶、前、侧视图的尺寸轴向正确。
 
-逐段线长、多段线节点尺寸和灯具专用尺寸规则将在总体尺寸验证通过后继续添加。
+三维深度尺寸、逐段线长、多段线节点尺寸和灯具专用尺寸规则将在总体尺寸验证通过后继续添加。
 
 ## 构建
 
