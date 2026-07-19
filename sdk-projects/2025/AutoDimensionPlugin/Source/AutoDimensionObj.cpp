@@ -259,8 +259,8 @@ namespace AutoDimensionPlugin
 	}
 
 	static SToolDef gToolDef = {
-		/*ToolType*/					eExtensionToolType_DefaultPoint,
-		/*ParametricName*/				"KeeplAutoDimTestObj",
+		/*ToolType*/					eExtensionToolType_Normal,
+		/*ParametricName*/				"",
 		/*PickAndUpdate*/				ToolDef::pickAndUpdate,
 		/*NeedScreenPlane*/				ToolDef::doesntNeedScreenPlane,
 		/*Need3DProjection*/			ToolDef::doesntNeed3DView,
@@ -323,7 +323,7 @@ IMPLEMENT_VWParametricExtension(
 IMPLEMENT_VWToolExtension(
 	/*Extension class*/	CExtAutoDimensionObjDefTool,
 	/*Event sink*/		CAutoDimensionObjDefTool_EventSink,
-	/*Universal name*/	"KeeplAutoDimTestObjTool",
+	/*Universal name*/	"KeeplAutoDimSelectionTool",
 	/*Version*/			1,
 	/*UUID*/			0x062dc681, 0x5f7a, 0x417f, 0x8d, 0x72, 0x8e, 0x95, 0xd1, 0x4c, 0x9c, 0x8b );
 
@@ -350,7 +350,7 @@ CExtAutoDimensionObjDefTool::~CExtAutoDimensionObjDefTool()
 }
 
 CAutoDimensionObjDefTool_EventSink::CAutoDimensionObjDefTool_EventSink(IVWUnknown* parent)
-	: VWToolDefaultPoint_EventSink(parent, "KeeplAutoDimTestObj")
+	: VWTool_EventSink(parent)
 {
 }
 
@@ -492,7 +492,7 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetDimensionDefinitions(EView
 bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
 {
 	fSelectionProxyCreated = false;
-	const bool result = VWToolDefaultPoint_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
+	const bool result = VWTool_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
 	MCObjectHandle selectedObject = gSDK->FirstSelectedObject();
 	if (IsSupportedSource(selectedObject)) {
 		fSelectionProxyCreated = CreateLinkedProxy(selectedObject) != nullptr;
@@ -503,7 +503,7 @@ bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeB
 
 void CAutoDimensionObjDefTool_EventSink::DoSetDown(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
 {
-	VWToolDefaultPoint_EventSink::DoSetDown(bRestore, pModeBarInitProvider);
+	VWTool_EventSink::DoSetDown(bRestore, pModeBarInitProvider);
 	fSelectionProxyCreated = false;
 }
 
@@ -531,18 +531,9 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		return;
 	}
 
-	VWToolDefault_EventSink::HandleComplete();
-	MCObjectHandle proxyObject = this->GetLastCreated();
+	MCObjectHandle proxyObject = CreateLinkedProxy(sourceObject);
 	if (!proxyObject) {
 		WriteRuntimeTrace("tool-complete proxy creation failed");
-		return;
-	}
-	WriteRuntimeTrace("tool-complete proxy created " + DescribeObject(proxyObject));
-
-	if (!LinkProxyToSource(proxyObject, sourceObject)) {
-		WriteRuntimeTrace("tool-complete source UUID failed");
-		gSDK->DeleteObject(proxyObject);
 		gSDK->AlertInform("The selected object could not be linked.");
-		return;
 	}
 }

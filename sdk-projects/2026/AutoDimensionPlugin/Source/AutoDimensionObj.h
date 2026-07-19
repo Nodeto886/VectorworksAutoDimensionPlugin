@@ -39,7 +39,7 @@ namespace AutoDimensionPlugin
 		virtual			~CExtAutoDimensionObjDefTool();
 	};
 
-	class CAutoDimensionObjDefTool_EventSink : public VWToolDefaultPoint_EventSink
+	class CAutoDimensionObjDefTool_EventSink : public VWTool_EventSink
 	{
 	public:
 						CAutoDimensionObjDefTool_EventSink(IVWUnknown* parent);
