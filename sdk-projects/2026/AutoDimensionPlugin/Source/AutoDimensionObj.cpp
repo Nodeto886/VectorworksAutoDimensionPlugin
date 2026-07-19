@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -19,6 +20,10 @@ namespace AutoDimensionPlugin
 	static const TXString kOverallDepth = "AD_OverallDepth";
 	static const TXString kSourceUUIDParam = "SourceUUID";
 	static const char* kRuntimeTracePath = "C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-autodim-runtime-2026.txt";
+	static constexpr short kLinearDimensionTypeOrtho = 0;
+	static constexpr short kLinearDimensionTypeAligned = 1;
+	static constexpr double kGeometryTolerance = 1e-6;
+	static constexpr double kPi = 3.14159265358979323846;
 
 	static void WriteRuntimeTrace(const std::string& message)
 	{
@@ -33,6 +38,14 @@ namespace AutoDimensionPlugin
 		std::ostringstream output;
 		output.precision(12);
 		output << '(' << point.x << ',' << point.y << ',' << point.z << ')';
+		return output.str();
+	}
+
+	static std::string FormatPoint(const WorldPt& point)
+	{
+		std::ostringstream output;
+		output.precision(12);
+		output << '(' << point.x << ',' << point.y << ')';
 		return output.str();
 	}
 
@@ -70,6 +83,108 @@ namespace AutoDimensionPlugin
 		return object && !VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj");
 	}
 
+	struct SLineMeasurement
+	{
+		WorldPt start;
+		WorldPt end;
+		WorldCoord dx = 0.0;
+		WorldCoord dy = 0.0;
+		double length = 0.0;
+		double angleDegrees = 0.0;
+	};
+
+	static bool GetLineMeasurement(MCObjectHandle object, SLineMeasurement& outMeasurement)
+	{
+		if (!object || gSDK->GetObjectTypeN(object) != kLineNode) {
+			return false;
+		}
+
+		gSDK->GetEndPoints(object, outMeasurement.start, outMeasurement.end);
+		outMeasurement.dx = outMeasurement.end.x - outMeasurement.start.x;
+		outMeasurement.dy = outMeasurement.end.y - outMeasurement.start.y;
+		outMeasurement.length = std::hypot(outMeasurement.dx, outMeasurement.dy);
+		if (outMeasurement.length <= kGeometryTolerance) {
+			return false;
+		}
+
+		outMeasurement.angleDegrees = std::atan2(
+			std::abs(outMeasurement.dy),
+			std::abs(outMeasurement.dx)) * 180.0 / kPi;
+		return true;
+	}
+
+	static bool GetLineAngleDefinition(const SLineMeasurement& line, WorldCoord referenceLength, WorldPt& outCenter, WorldPt& outP1, WorldPt& outP2)
+	{
+		outCenter = line.start;
+		WorldPt otherPoint = line.end;
+		if (otherPoint.x < outCenter.x ||
+			(std::abs(otherPoint.x - outCenter.x) <= kGeometryTolerance && otherPoint.y < outCenter.y)) {
+			std::swap(outCenter, otherPoint);
+		}
+
+		const WorldCoord dx = otherPoint.x - outCenter.x;
+		const WorldCoord dy = otherPoint.y - outCenter.y;
+		if (std::abs(dx) <= kGeometryTolerance && std::abs(dy) <= kGeometryTolerance) {
+			return false;
+		}
+
+		const WorldCoord horizontalLength = std::max<WorldCoord>(std::abs(dx), referenceLength);
+		const WorldPt horizontalPoint(outCenter.x + horizontalLength, outCenter.y);
+		if (std::abs(dy) <= kGeometryTolerance) {
+			return false;
+		}
+
+		if (dy > 0.0) {
+			outP1 = horizontalPoint;
+			outP2 = otherPoint;
+		}
+		else {
+			outP1 = otherPoint;
+			outP2 = horizontalPoint;
+		}
+
+		// CreateAngleDimension follows the ordered rays. Keep the minor angle when
+		// the line points below the reference ray or crosses the -180/180 boundary.
+		const double angle1 = std::atan2(outP1.y - outCenter.y, outP1.x - outCenter.x);
+		const double angle2 = std::atan2(outP2.y - outCenter.y, outP2.x - outCenter.x);
+		double sweep = angle2 - angle1;
+		while (sweep < 0.0) sweep += 2.0 * kPi;
+		while (sweep >= 2.0 * kPi) sweep -= 2.0 * kPi;
+		if (sweep > kPi) {
+			std::swap(outP1, outP2);
+		}
+
+		return true;
+	}
+
+	static MCObjectHandle AddLinearDimension(const WorldPt& p1, const WorldPt& p2, WorldCoord startOffset, const Vector2& direction, short dimensionType, const char* traceName, size_t& ioCreatedCount)
+	{
+		MCObjectHandle dimension = gSDK->CreateLinearDimension(p1, p2, startOffset, 0.0, direction, dimensionType);
+		if (dimension) {
+			gSDK->AddAfterSwapObject(dimension);
+			++ioCreatedCount;
+			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
+		}
+		else {
+			WriteRuntimeTrace(std::string("dimension-tool failed ") + traceName);
+		}
+		return dimension;
+	}
+
+	static MCObjectHandle AddAngleDimension(const WorldPt& center, const WorldPt& p1, const WorldPt& p2, WorldCoord startOffset, const char* traceName, size_t& ioCreatedCount)
+	{
+		MCObjectHandle dimension = gSDK->CreateAngleDimension(center, p1, p2, startOffset);
+		if (dimension) {
+			gSDK->AddAfterSwapObject(dimension);
+			++ioCreatedCount;
+			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
+		}
+		else {
+			WriteRuntimeTrace(std::string("dimension-tool failed ") + traceName);
+		}
+		return dimension;
+	}
+
 	static size_t CreateDimensionsForSource(MCObjectHandle sourceObject)
 	{
 		if (!IsSupportedSource(sourceObject)) {
@@ -85,23 +200,47 @@ namespace AutoDimensionPlugin
 		const WorldPt leftBottom(bounds.MinX(), bounds.MinY());
 		const WorldPt rightBottom(bounds.MaxX(), bounds.MinY());
 		const WorldPt rightTop(bounds.MaxX(), bounds.MaxY());
+		SLineMeasurement lineMeasurement;
+		const bool hasLineMeasurement = GetLineMeasurement(sourceObject, lineMeasurement);
+		if (hasLineMeasurement) {
+			std::ostringstream lineTrace;
+			lineTrace.precision(12);
+			lineTrace << "dimension-tool line start=" << FormatPoint(lineMeasurement.start)
+				<< " end=" << FormatPoint(lineMeasurement.end)
+				<< " dx=" << lineMeasurement.dx
+				<< " dy=" << lineMeasurement.dy
+				<< " length=" << lineMeasurement.length
+				<< " angle-degrees=" << lineMeasurement.angleDegrees;
+			WriteRuntimeTrace(lineTrace.str());
+		}
 
 		size_t createdCount = 0;
 		gSDK->SetUndoMethod(kUndoSwapObjects);
 		if (width > 1e-6) {
-			MCObjectHandle dimension = gSDK->CreateLinearDimension(leftBottom, rightBottom, -offset, 0.0, Vector2(0.0, 0.0), 0);
-			if (dimension) {
-				gSDK->AddAfterSwapObject(dimension);
-				++createdCount;
-				WriteRuntimeTrace("dimension-tool created horizontal " + DescribeObject(dimension));
-			}
+			AddLinearDimension(leftBottom, rightBottom, -offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "horizontal", createdCount);
 		}
 		if (height > 1e-6) {
-			MCObjectHandle dimension = gSDK->CreateLinearDimension(rightBottom, rightTop, offset, 0.0, Vector2(0.0, 0.0), 0);
-			if (dimension) {
-				gSDK->AddAfterSwapObject(dimension);
-				++createdCount;
-				WriteRuntimeTrace("dimension-tool created vertical " + DescribeObject(dimension));
+			AddLinearDimension(rightBottom, rightTop, offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "vertical", createdCount);
+		}
+
+		if (hasLineMeasurement && std::abs(lineMeasurement.dx) > kGeometryTolerance && std::abs(lineMeasurement.dy) > kGeometryTolerance) {
+			const Vector2 lineDirection(
+				lineMeasurement.dx / lineMeasurement.length,
+				lineMeasurement.dy / lineMeasurement.length);
+			AddLinearDimension(
+				lineMeasurement.start,
+				lineMeasurement.end,
+				-offset * 0.75,
+				lineDirection,
+				kLinearDimensionTypeAligned,
+				"aligned-length",
+				createdCount);
+
+			WorldPt angleCenter;
+			WorldPt angleP1;
+			WorldPt angleP2;
+			if (GetLineAngleDefinition(lineMeasurement, offset, angleCenter, angleP1, angleP2)) {
+				AddAngleDimension(angleCenter, angleP1, angleP2, offset * 1.25, "angle", createdCount);
 			}
 		}
 		if (createdCount > 0) {
@@ -112,6 +251,12 @@ namespace AutoDimensionPlugin
 		trace.precision(12);
 		trace << "dimension-tool source " << DescribeObject(sourceObject)
 			<< " width=" << width << " height=" << height
+			<< " line=" << (hasLineMeasurement ? "true" : "false");
+		if (hasLineMeasurement) {
+			trace << " lineLength=" << lineMeasurement.length
+				<< " lineAngleDegrees=" << lineMeasurement.angleDegrees;
+		}
+		trace
 			<< " created=" << createdCount;
 		WriteRuntimeTrace(trace.str());
 		return createdCount;

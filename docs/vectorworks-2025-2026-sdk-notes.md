@@ -48,4 +48,6 @@ The trace records picked object type and UUID, 3D bounds, proxy creation, object
 
 For the first interactive test, select the source object before activating the tool. The ordinary tool creates linear dimension objects directly and does not duplicate the source object; the click path remains available for objects that are not preselected.
 
-The first functional milestone validates overall width, height, and depth. Segment length, polyline vertex chains, and lighting-specific dimensions are separate geometry rules built after this matrix passes the overall-dimension flow.
+The ordinary tool now treats a 2D line as a special measured primitive. It reads the line's real endpoints with `GetEndPoints`, creates horizontal and vertical projection dimensions, creates an aligned true-length dimension with `CreateLinearDimension`, and creates the acute angle from the horizontal reference with `CreateAngleDimension`.
+
+Overall width, height, and depth remain the fallback for symbols, lighting devices, open/closed 2D geometry, and 3D objects. Polyline vertex chains, rotated-symbol local axes, and lighting-specific dimensions remain separate geometry rules.
