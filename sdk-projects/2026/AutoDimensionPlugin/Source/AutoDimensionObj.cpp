@@ -9,6 +9,7 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <vector>
 
 using namespace AutoDimensionPlugin;
 
@@ -23,7 +24,10 @@ namespace AutoDimensionPlugin
 	static const char* kRuntimeTracePath = "C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-autodim-runtime-2026.txt";
 	static constexpr short kLinearDimensionTypeOrtho = 0;
 	static constexpr short kLinearDimensionTypeAligned = 1;
+	static constexpr size_t kDimensionModeGroup = 0;
+	static constexpr size_t kDimensionModeSpacing = 1;
 	static constexpr double kGeometryTolerance = 1e-6;
+	static constexpr double kDimensionTextSizePoints = 9.0;
 	static constexpr double kPi = 3.14159265358979323846;
 
 	static void WriteRuntimeTrace(const std::string& message)
@@ -81,7 +85,9 @@ namespace AutoDimensionPlugin
 
 	static bool IsSupportedSource(MCObjectHandle object)
 	{
-		return object && !VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj");
+		return object &&
+			gSDK->GetObjectTypeN(object) != dimHeaderNode &&
+			!VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj");
 	}
 
 	struct SLineMeasurement
@@ -167,10 +173,23 @@ namespace AutoDimensionPlugin
 		return true;
 	}
 
+	static void ApplyDimensionPresentation(MCObjectHandle dimension, const char* traceName)
+	{
+		const Boolean textSizeSet = gSDK->SetObjectVariable(
+			dimension,
+			ovDimTextSizeInPoints,
+			TVariableBlock(static_cast<Real64>(kDimensionTextSizePoints)));
+		gSDK->ResetObject(dimension);
+		WriteRuntimeTrace(std::string("dimension-tool presentation ") + traceName
+			+ " textPoints=" + std::to_string(kDimensionTextSizePoints)
+			+ " set=" + (textSizeSet ? "true" : "false"));
+	}
+
 	static MCObjectHandle AddLinearDimension(const WorldPt& p1, const WorldPt& p2, WorldCoord startOffset, const Vector2& direction, short dimensionType, const char* traceName, size_t& ioCreatedCount)
 	{
 		MCObjectHandle dimension = gSDK->CreateLinearDimension(p1, p2, startOffset, 0.0, direction, dimensionType);
 		if (dimension) {
+			ApplyDimensionPresentation(dimension, traceName);
 			gSDK->AddAfterSwapObject(dimension);
 			++ioCreatedCount;
 			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
@@ -185,6 +204,7 @@ namespace AutoDimensionPlugin
 	{
 		MCObjectHandle dimension = gSDK->CreateAngleDimension(center, p1, p2, startOffset);
 		if (dimension) {
+			ApplyDimensionPresentation(dimension, traceName);
 			gSDK->AddAfterSwapObject(dimension);
 			++ioCreatedCount;
 			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
@@ -202,21 +222,23 @@ namespace AutoDimensionPlugin
 			return 0;
 		}
 
-		WorldCube bounds;
-		gSDK->GetObjectCube(sourceObject, bounds);
-		const WorldCoord width = bounds.MaxX() - bounds.MinX();
-		const WorldCoord height = bounds.MaxY() - bounds.MinY();
-		const WorldCoord offset = std::max<WorldCoord>(10.0, std::max(width, height) * 0.1);
-		const WorldPt leftBottom(bounds.MinX(), bounds.MinY());
-		const WorldPt rightBottom(bounds.MaxX(), bounds.MinY());
-		const WorldPt rightTop(bounds.MaxX(), bounds.MaxY());
+		WorldCube objectBounds;
+		gSDK->GetObjectCube(sourceObject, objectBounds);
 		SLineMeasurement lineMeasurement;
 		const bool hasLineMeasurement = GetLineMeasurement(sourceObject, lineMeasurement);
 		ComplexGeometry::SCollection geometry;
 		ComplexGeometry::SDominantAxis dominantAxis;
+		ComplexGeometry::SAxisAlignedBounds geometryBounds;
+		ComplexGeometry::SOrientedBounds orientedBounds;
+		bool hasGeometryBounds = false;
+		bool hasOrientedBounds = false;
 		if (!hasLineMeasurement) {
 			geometry = ComplexGeometry::Collect(sourceObject);
 			ComplexGeometry::FindDominantAxis(geometry, dominantAxis);
+			hasGeometryBounds = ComplexGeometry::CalculateAxisAlignedBounds(geometry, geometryBounds);
+			if (!geometry.sourceIsOpenPath && dominantAxis.valid && dominantAxis.foldedAngleDegrees > 2.0) {
+				hasOrientedBounds = ComplexGeometry::CalculateOrientedBounds(geometry, dominantAxis, orientedBounds);
+			}
 
 			std::ostringstream geometryTrace;
 			geometryTrace.precision(12);
@@ -226,7 +248,12 @@ namespace AutoDimensionPlugin
 				<< " detailSegments=" << geometry.detailSegments.size()
 				<< " openPath=" << (geometry.sourceIsOpenPath ? "true" : "false")
 				<< " truncated=" << (geometry.truncated ? "true" : "false")
-				<< " dominant=" << (dominantAxis.valid ? "true" : "false");
+				<< " dominant=" << (dominantAxis.valid ? "true" : "false")
+				<< " geometryBounds=" << (hasGeometryBounds ? "true" : "false");
+			if (hasGeometryBounds) {
+				geometryTrace << " geometryWidth=" << geometryBounds.width
+					<< " geometryHeight=" << geometryBounds.height;
+			}
 			if (dominantAxis.valid) {
 				geometryTrace << " direction=" << FormatPoint(dominantAxis.direction)
 					<< " foldedAngleDegrees=" << dominantAxis.foldedAngleDegrees
@@ -246,12 +273,38 @@ namespace AutoDimensionPlugin
 			WriteRuntimeTrace(lineTrace.str());
 		}
 
+		double minX = objectBounds.MinX();
+		double minY = objectBounds.MinY();
+		double maxX = objectBounds.MaxX();
+		double maxY = objectBounds.MaxY();
+		const char* boundsSource = "object-cube";
+		if (!hasLineMeasurement && hasGeometryBounds) {
+			minX = geometryBounds.minX;
+			minY = geometryBounds.minY;
+			maxX = geometryBounds.maxX;
+			maxY = geometryBounds.maxY;
+			boundsSource = "2d-geometry";
+		}
+
+		const WorldCoord width = maxX - minX;
+		const WorldCoord height = maxY - minY;
+		WorldCoord measuredExtent = std::max(width, height);
+		if (hasOrientedBounds) {
+			measuredExtent = std::max<WorldCoord>(measuredExtent, std::max(orientedBounds.width, orientedBounds.height));
+		}
+		const WorldCoord offset = std::max<WorldCoord>(25.0, measuredExtent * 0.15);
+		const WorldPt leftBottom(minX, minY);
+		const WorldPt rightBottom(maxX, minY);
+		const WorldPt rightTop(maxX, maxY);
+		const bool hasOpenDetails = geometry.sourceIsOpenPath && !geometry.detailSegments.empty();
+		const bool shouldCreateOverall = hasLineMeasurement || (!hasOpenDetails && !hasOrientedBounds);
+
 		size_t createdCount = 0;
 		gSDK->SetUndoMethod(kUndoSwapObjects);
-		if (width > 1e-6) {
+		if (shouldCreateOverall && width > kGeometryTolerance) {
 			AddLinearDimension(leftBottom, rightBottom, -offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "horizontal", createdCount);
 		}
-		if (height > 1e-6) {
+		if (shouldCreateOverall && height > kGeometryTolerance) {
 			AddLinearDimension(rightBottom, rightTop, offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "vertical", createdCount);
 		}
 
@@ -297,35 +350,32 @@ namespace AutoDimensionPlugin
 						createdCount);
 				}
 			}
-			else if (dominantAxis.foldedAngleDegrees > 2.0) {
-				ComplexGeometry::SOrientedBounds orientedBounds;
-				if (ComplexGeometry::CalculateOrientedBounds(geometry, dominantAxis, orientedBounds)) {
-					std::ostringstream orientedTrace;
-					orientedTrace.precision(12);
-					orientedTrace << "dimension-tool oriented width=" << orientedBounds.width
-						<< " height=" << orientedBounds.height;
-					WriteRuntimeTrace(orientedTrace.str());
+			else if (hasOrientedBounds) {
+				std::ostringstream orientedTrace;
+				orientedTrace.precision(12);
+				orientedTrace << "dimension-tool oriented width=" << orientedBounds.width
+					<< " height=" << orientedBounds.height;
+				WriteRuntimeTrace(orientedTrace.str());
 
-					if (orientedBounds.width > kGeometryTolerance) {
-						AddLinearDimension(
-							orientedBounds.widthStart,
-							orientedBounds.widthEnd,
-							-offset * 0.75,
-							Vector2(dominantAxis.direction.x, dominantAxis.direction.y),
-							kLinearDimensionTypeAligned,
-							"oriented-width",
-							createdCount);
-					}
-					if (orientedBounds.height > kGeometryTolerance) {
-						AddLinearDimension(
-							orientedBounds.heightStart,
-							orientedBounds.heightEnd,
-							offset * 0.75,
-							Vector2(-dominantAxis.direction.y, dominantAxis.direction.x),
-							kLinearDimensionTypeAligned,
-							"oriented-height",
-							createdCount);
-					}
+				if (orientedBounds.width > kGeometryTolerance) {
+					AddLinearDimension(
+						orientedBounds.widthStart,
+						orientedBounds.widthEnd,
+						-offset,
+						Vector2(dominantAxis.direction.x, dominantAxis.direction.y),
+						kLinearDimensionTypeAligned,
+						"oriented-width",
+						createdCount);
+				}
+				if (orientedBounds.height > kGeometryTolerance) {
+					AddLinearDimension(
+						orientedBounds.heightStart,
+						orientedBounds.heightEnd,
+						offset,
+						Vector2(-dominantAxis.direction.y, dominantAxis.direction.x),
+						kLinearDimensionTypeAligned,
+						"oriented-height",
+						createdCount);
 				}
 			}
 
@@ -348,7 +398,10 @@ namespace AutoDimensionPlugin
 		std::ostringstream trace;
 		trace.precision(12);
 		trace << "dimension-tool source " << DescribeObject(sourceObject)
-			<< " width=" << width << " height=" << height
+			<< " cubeWidth=" << (objectBounds.MaxX() - objectBounds.MinX())
+			<< " cubeHeight=" << (objectBounds.MaxY() - objectBounds.MinY())
+			<< " measuredWidth=" << width << " measuredHeight=" << height
+			<< " boundsSource=" << boundsSource << " offset=" << offset
 			<< " line=" << (hasLineMeasurement ? "true" : "false");
 		if (hasLineMeasurement) {
 			trace << " lineLength=" << lineMeasurement.length
@@ -357,6 +410,163 @@ namespace AutoDimensionPlugin
 		trace
 			<< " created=" << createdCount;
 		WriteRuntimeTrace(trace.str());
+		return createdCount;
+	}
+
+	struct SSelectionDimensionResult
+	{
+		size_t sourceCount = 0;
+		size_t dimensionCount = 0;
+	};
+
+	static std::vector<MCObjectHandle> CollectSelectedSources()
+	{
+		std::vector<MCObjectHandle> selectedSources;
+		VWFC::VWObjects::VWObjectIterator iterator(gSDK->FirstSelectedObject());
+		while (iterator) {
+			MCObjectHandle object = *iterator;
+			if (IsSupportedSource(object)) {
+				selectedSources.push_back(object);
+			}
+			iterator.MoveNextSelected();
+		}
+		return selectedSources;
+	}
+
+	static SSelectionDimensionResult CreateDimensionsForSelection(const std::vector<MCObjectHandle>& selectedSources)
+	{
+		SSelectionDimensionResult result;
+		result.sourceCount = selectedSources.size();
+		for (MCObjectHandle sourceObject : selectedSources) {
+			result.dimensionCount += CreateDimensionsForSource(sourceObject);
+		}
+
+		WriteRuntimeTrace("selection-batch selected=" + std::to_string(gSDK->NumSelectedObjects())
+			+ " sources=" + std::to_string(result.sourceCount)
+			+ " dimensions=" + std::to_string(result.dimensionCount));
+		return result;
+	}
+
+	struct SSpacingSource
+	{
+		WorldPt center;
+		WorldCoord extent = 0.0;
+	};
+
+	static bool GetSpacingSource(MCObjectHandle sourceObject, SSpacingSource& outSource)
+	{
+		ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(sourceObject);
+		ComplexGeometry::SAxisAlignedBounds bounds;
+		if (ComplexGeometry::CalculateAxisAlignedBounds(geometry, bounds)) {
+			outSource.center = WorldPt(
+				(bounds.minX + bounds.maxX) * 0.5,
+				(bounds.minY + bounds.maxY) * 0.5);
+			outSource.extent = std::max<WorldCoord>(bounds.width, bounds.height);
+		}
+		else {
+			WorldCube objectBounds;
+			gSDK->GetObjectCube(sourceObject, objectBounds);
+			const WorldCoord width = objectBounds.MaxX() - objectBounds.MinX();
+			const WorldCoord height = objectBounds.MaxY() - objectBounds.MinY();
+			if (width <= kGeometryTolerance && height <= kGeometryTolerance) {
+				return false;
+			}
+
+			outSource.center = WorldPt(
+				(objectBounds.MinX() + objectBounds.MaxX()) * 0.5,
+				(objectBounds.MinY() + objectBounds.MaxY()) * 0.5);
+			outSource.extent = std::max(width, height);
+		}
+
+		const short objectType = gSDK->GetObjectTypeN(sourceObject);
+		if (objectType == kSymbolNode || objectType == kParametricNode) {
+			TransformMatrix entityMatrix;
+			gSDK->GetEntityMatrix(sourceObject, entityMatrix);
+			outSource.center = WorldPt(entityMatrix.P().x, entityMatrix.P().y);
+		}
+		return true;
+	}
+
+	static size_t CreateSpacingDimensionsForSelection(const std::vector<MCObjectHandle>& selectedSources)
+	{
+		std::vector<SSpacingSource> spacingSources;
+		for (MCObjectHandle sourceObject : selectedSources) {
+			SSpacingSource spacingSource;
+			if (GetSpacingSource(sourceObject, spacingSource)) {
+				spacingSources.push_back(spacingSource);
+			}
+		}
+		if (spacingSources.size() < 2) {
+			WriteRuntimeTrace("spacing-batch requires at least two measurable sources");
+			return 0;
+		}
+
+		const size_t sourceCount = spacingSources.size();
+		const size_t noParent = std::numeric_limits<size_t>::max();
+		std::vector<bool> connected(sourceCount, false);
+		std::vector<double> nearestDistanceSquared(sourceCount, std::numeric_limits<double>::max());
+		std::vector<size_t> nearestParent(sourceCount, noParent);
+		nearestDistanceSquared[0] = 0.0;
+
+		size_t createdCount = 0;
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		for (size_t connectedCount = 0; connectedCount < sourceCount; ++connectedCount) {
+			size_t nextIndex = noParent;
+			for (size_t index = 0; index < sourceCount; ++index) {
+				if (!connected[index] && (nextIndex == noParent || nearestDistanceSquared[index] < nearestDistanceSquared[nextIndex])) {
+					nextIndex = index;
+				}
+			}
+			if (nextIndex == noParent) {
+				break;
+			}
+
+			connected[nextIndex] = true;
+			if (nearestParent[nextIndex] != noParent) {
+				WorldPt start = spacingSources[nearestParent[nextIndex]].center;
+				WorldPt end = spacingSources[nextIndex].center;
+				WorldCoord dx = end.x - start.x;
+				WorldCoord dy = end.y - start.y;
+				const WorldCoord length = std::hypot(dx, dy);
+				if (length > kGeometryTolerance) {
+					if (dx < 0.0 || (std::abs(dx) <= kGeometryTolerance && dy < 0.0)) {
+						std::swap(start, end);
+						dx = -dx;
+						dy = -dy;
+					}
+					const WorldCoord offset = std::max<WorldCoord>(
+						50.0,
+						std::max(spacingSources[nearestParent[nextIndex]].extent, spacingSources[nextIndex].extent) * 0.6);
+					AddLinearDimension(
+						start,
+						end,
+						-offset,
+						Vector2(dx / length, dy / length),
+						kLinearDimensionTypeAligned,
+						"center-spacing",
+						createdCount);
+				}
+			}
+
+			for (size_t candidate = 0; candidate < sourceCount; ++candidate) {
+				if (connected[candidate]) {
+					continue;
+				}
+				const WorldCoord dx = spacingSources[candidate].center.x - spacingSources[nextIndex].center.x;
+				const WorldCoord dy = spacingSources[candidate].center.y - spacingSources[nextIndex].center.y;
+				const double distanceSquared = dx * dx + dy * dy;
+				if (distanceSquared < nearestDistanceSquared[candidate]) {
+					nearestDistanceSquared[candidate] = distanceSquared;
+					nearestParent[candidate] = nextIndex;
+				}
+			}
+		}
+
+		if (createdCount > 0) {
+			gSDK->EndUndoEvent();
+		}
+		WriteRuntimeTrace("spacing-batch sources=" + std::to_string(spacingSources.size())
+			+ " dimensions=" + std::to_string(createdCount));
 		return createdCount;
 	}
 
@@ -744,26 +954,53 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetDimensionDefinitions(EView
 
 bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
 {
-	fSelectionDimensionsCreated = false;
 	const bool result = VWTool_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
-	MCObjectHandle selectedObject = gSDK->FirstSelectedObject();
-	if (IsSupportedSource(selectedObject)) {
-		fSelectionDimensionsCreated = CreateDimensionsForSource(selectedObject) > 0;
-		WriteRuntimeTrace(std::string("tool-setup selection-dimensions=") + (fSelectionDimensionsCreated ? "true" : "false"));
-	}
+	TXStringArray images;
+	images.Append("KeeplAutoDimTest/Images/KeeplAutoDimTestObjTool.png");
+	images.Append("Vectorworks/Images/ModeViewBar/Line_Button2.png");
+	pModeBarInitProvider->AddRadioModeGroup(fDimensionMode, images);
+
+	VectorWorks::TVWModeBarButtonHelpArray buttonHelp;
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Object dimensions", "Dimension every selected object independently.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Fixture spacing", "Dimension center-to-center spacing between adjacent selected fixtures.", VectorWorks::eModeBarButtonType_RadioMode));
+	gSDK->SetModeBarButtonsText(buttonHelp);
+	WriteRuntimeTrace("tool-setup mode=" + std::to_string(fDimensionMode));
 	return result;
 }
 
 void CAutoDimensionObjDefTool_EventSink::DoSetDown(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
 {
 	VWTool_EventSink::DoSetDown(bRestore, pModeBarInitProvider);
-	fSelectionDimensionsCreated = false;
+}
+
+void CAutoDimensionObjDefTool_EventSink::DoModeEvent(size_t modeGroupID, size_t newButtonID, size_t oldButtonID)
+{
+	(void)oldButtonID;
+	if (modeGroupID == kDimensionModeGroup) {
+		fDimensionMode = newButtonID;
+		WriteRuntimeTrace("tool-mode changed=" + std::to_string(fDimensionMode));
+	}
 }
 
 void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 {
-	if (fSelectionDimensionsCreated) {
-		WriteRuntimeTrace("tool-complete skipped; selection dimensions already created");
+	const std::vector<MCObjectHandle> selectedSources = CollectSelectedSources();
+	if (fDimensionMode == kDimensionModeSpacing) {
+		if (selectedSources.size() < 2) {
+			WriteRuntimeTrace("tool-complete spacing rejected selection");
+			gSDK->AlertInform("Select at least two fixtures before using Fixture Spacing mode.");
+			return;
+		}
+		if (CreateSpacingDimensionsForSelection(selectedSources) == 0) {
+			gSDK->AlertInform("No measurable center-to-center spacing was found.");
+		}
+		return;
+	}
+	if (!selectedSources.empty()) {
+		const SSelectionDimensionResult result = CreateDimensionsForSelection(selectedSources);
+		if (result.dimensionCount == 0) {
+			gSDK->AlertInform("No measurable horizontal or vertical extent was found.");
+		}
 		return;
 	}
 

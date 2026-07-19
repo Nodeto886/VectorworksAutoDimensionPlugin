@@ -47,9 +47,10 @@ namespace AutoDimensionPlugin
 
 		virtual bool	DoSetUp(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider);
 		virtual void	DoSetDown(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider);
+		virtual void	DoModeEvent(size_t modeGroupID, size_t newButtonID, size_t oldButtonID);
 		virtual void	HandleComplete();
 
 	private:
-		bool			fSelectionDimensionsCreated = false;
+		size_t			fDimensionMode = 0;
 	};
 }

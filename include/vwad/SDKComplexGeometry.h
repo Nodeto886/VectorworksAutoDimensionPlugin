@@ -46,6 +46,17 @@ namespace AutoDimensionPlugin
 			bool valid = false;
 		};
 
+		struct SAxisAlignedBounds
+		{
+			double minX = 0.0;
+			double minY = 0.0;
+			double maxX = 0.0;
+			double maxY = 0.0;
+			double width = 0.0;
+			double height = 0.0;
+			bool valid = false;
+		};
+
 		struct SOrientedBounds
 		{
 			WorldPt widthStart;
@@ -409,6 +420,29 @@ namespace AutoDimensionPlugin
 			outAxis.supportingLength = binLengths[winningBin];
 			outAxis.valid = true;
 			return true;
+		}
+
+		static bool CalculateAxisAlignedBounds(const SCollection& collection, SAxisAlignedBounds& outBounds)
+		{
+			if (collection.points.empty()) {
+				return false;
+			}
+
+			outBounds.minX = std::numeric_limits<double>::max();
+			outBounds.minY = std::numeric_limits<double>::max();
+			outBounds.maxX = std::numeric_limits<double>::lowest();
+			outBounds.maxY = std::numeric_limits<double>::lowest();
+			for (const WorldPt& point : collection.points) {
+				outBounds.minX = std::min(outBounds.minX, point.x);
+				outBounds.minY = std::min(outBounds.minY, point.y);
+				outBounds.maxX = std::max(outBounds.maxX, point.x);
+				outBounds.maxY = std::max(outBounds.maxY, point.y);
+			}
+
+			outBounds.width = outBounds.maxX - outBounds.minX;
+			outBounds.height = outBounds.maxY - outBounds.minY;
+			outBounds.valid = outBounds.width > kTolerance || outBounds.height > kTolerance;
+			return outBounds.valid;
 		}
 
 		static bool CalculateOrientedBounds(const SCollection& collection, const SDominantAxis& axis, SOrientedBounds& outBounds)
