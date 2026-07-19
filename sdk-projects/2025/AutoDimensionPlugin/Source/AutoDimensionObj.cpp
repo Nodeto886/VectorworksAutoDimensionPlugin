@@ -70,41 +70,51 @@ namespace AutoDimensionPlugin
 		return object && !VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj");
 	}
 
-	static bool LinkProxyToSource(MCObjectHandle proxyObject, MCObjectHandle sourceObject)
-	{
-		UuidStorage sourceUUID;
-		if (!proxyObject || !sourceObject || !gSDK->GetObjectUuidN(sourceObject, sourceUUID) || sourceUUID.IsEmpty()) {
-			WriteRuntimeTrace("link-proxy source UUID failed");
-			return false;
-		}
-
-		VWParametricObj parametric(proxyObject);
-		parametric.SetParamString(kSourceUUIDParam, sourceUUID.ToString());
-		WriteRuntimeTrace(std::string("link-proxy source_uuid=") + sourceUUID.ToString().operator const char*());
-		gSDK->ResetObject(proxyObject);
-		return true;
-	}
-
-	static MCObjectHandle CreateLinkedProxy(MCObjectHandle sourceObject)
+	static size_t CreateDimensionsForSource(MCObjectHandle sourceObject)
 	{
 		if (!IsSupportedSource(sourceObject)) {
-			return nullptr;
+			WriteRuntimeTrace("dimension-tool rejected source");
+			return 0;
 		}
 
 		WorldCube bounds;
 		gSDK->GetObjectCube(sourceObject, bounds);
-		VWParametricObj proxy("KeeplAutoDimTestObj", VWPoint2D(bounds.MinX(), bounds.MinY()));
-		MCObjectHandle proxyObject = proxy;
-		WriteRuntimeTrace("create-linked-proxy source " + DescribeObject(sourceObject));
-		if (!LinkProxyToSource(proxyObject, sourceObject)) {
-			if (proxyObject) {
-				gSDK->DeleteObject(proxyObject);
+		const WorldCoord width = bounds.MaxX() - bounds.MinX();
+		const WorldCoord height = bounds.MaxY() - bounds.MinY();
+		const WorldCoord offset = std::max<WorldCoord>(10.0, std::max(width, height) * 0.1);
+		const WorldPt leftBottom(bounds.MinX(), bounds.MinY());
+		const WorldPt rightBottom(bounds.MaxX(), bounds.MinY());
+		const WorldPt rightTop(bounds.MaxX(), bounds.MaxY());
+
+		size_t createdCount = 0;
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		if (width > 1e-6) {
+			MCObjectHandle dimension = gSDK->CreateLinearDimension(leftBottom, rightBottom, -offset, 0.0, Vector2(0.0, 0.0), 0);
+			if (dimension) {
+				gSDK->AddAfterSwapObject(dimension);
+				++createdCount;
+				WriteRuntimeTrace("dimension-tool created horizontal " + DescribeObject(dimension));
 			}
-			return nullptr;
+		}
+		if (height > 1e-6) {
+			MCObjectHandle dimension = gSDK->CreateLinearDimension(rightBottom, rightTop, offset, 0.0, Vector2(0.0, 0.0), 0);
+			if (dimension) {
+				gSDK->AddAfterSwapObject(dimension);
+				++createdCount;
+				WriteRuntimeTrace("dimension-tool created vertical " + DescribeObject(dimension));
+			}
+		}
+		if (createdCount > 0) {
+			gSDK->EndUndoEvent();
 		}
 
-		WriteRuntimeTrace("create-linked-proxy result " + DescribeObject(proxyObject));
-		return proxyObject;
+		std::ostringstream trace;
+		trace.precision(12);
+		trace << "dimension-tool source " << DescribeObject(sourceObject)
+			<< " width=" << width << " height=" << height
+			<< " created=" << createdCount;
+		WriteRuntimeTrace(trace.str());
+		return createdCount;
 	}
 
 	struct SSourceBounds
@@ -491,12 +501,12 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetDimensionDefinitions(EView
 
 bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
 {
-	fSelectionProxyCreated = false;
+	fSelectionDimensionsCreated = false;
 	const bool result = VWTool_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
 	MCObjectHandle selectedObject = gSDK->FirstSelectedObject();
 	if (IsSupportedSource(selectedObject)) {
-		fSelectionProxyCreated = CreateLinkedProxy(selectedObject) != nullptr;
-		WriteRuntimeTrace(std::string("tool-setup selection-proxy=") + (fSelectionProxyCreated ? "true" : "false"));
+		fSelectionDimensionsCreated = CreateDimensionsForSource(selectedObject) > 0;
+		WriteRuntimeTrace(std::string("tool-setup selection-dimensions=") + (fSelectionDimensionsCreated ? "true" : "false"));
 	}
 	return result;
 }
@@ -504,13 +514,13 @@ bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeB
 void CAutoDimensionObjDefTool_EventSink::DoSetDown(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
 {
 	VWTool_EventSink::DoSetDown(bRestore, pModeBarInitProvider);
-	fSelectionProxyCreated = false;
+	fSelectionDimensionsCreated = false;
 }
 
 void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 {
-	if (fSelectionProxyCreated) {
-		WriteRuntimeTrace("tool-complete skipped; selection proxy already created");
+	if (fSelectionDimensionsCreated) {
+		WriteRuntimeTrace("tool-complete skipped; selection dimensions already created");
 		return;
 	}
 
@@ -531,9 +541,8 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		return;
 	}
 
-	MCObjectHandle proxyObject = CreateLinkedProxy(sourceObject);
-	if (!proxyObject) {
-		WriteRuntimeTrace("tool-complete proxy creation failed");
-		gSDK->AlertInform("The selected object could not be linked.");
+	if (CreateDimensionsForSource(sourceObject) == 0) {
+		WriteRuntimeTrace("tool-complete dimension creation failed");
+		gSDK->AlertInform("No measurable horizontal or vertical extent was found.");
 	}
 }

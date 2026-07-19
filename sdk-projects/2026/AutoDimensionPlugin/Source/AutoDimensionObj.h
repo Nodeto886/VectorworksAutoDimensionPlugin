@@ -50,6 +50,6 @@ namespace AutoDimensionPlugin
 		virtual void	HandleComplete();
 
 	private:
-		bool			fSelectionProxyCreated = false;
+		bool			fSelectionDimensionsCreated = false;
 	};
 }
