@@ -2,6 +2,7 @@
 
 #include "AutoDimensionObj.h"
 #include "../../../../include/vwad/SDKComplexGeometry.h"
+#include "../../../../include/vwad/SDKViewPlane.h"
 
 #include <algorithm>
 #include <array>
@@ -173,23 +174,27 @@ namespace AutoDimensionPlugin
 		return true;
 	}
 
-	static void ApplyDimensionPresentation(MCObjectHandle dimension, const char* traceName)
+	static void ApplyDimensionPresentation(MCObjectHandle dimension, const ViewPlane::SViewPlane& plane, const char* traceName)
 	{
+		// The planar reference has to be applied before the reset so the dimension is
+		// laid out on the measuring plane instead of the ground plane.
+		ViewPlane::ApplyPlanarRef(dimension, plane);
 		const Boolean textSizeSet = gSDK->SetObjectVariable(
 			dimension,
 			ovDimTextSizeInPoints,
 			TVariableBlock(static_cast<Real64>(kDimensionTextSizePoints)));
 		gSDK->ResetObject(dimension);
 		WriteRuntimeTrace(std::string("dimension-tool presentation ") + traceName
+			+ " plane=" + plane.name
 			+ " textPoints=" + std::to_string(kDimensionTextSizePoints)
 			+ " set=" + (textSizeSet ? "true" : "false"));
 	}
 
-	static MCObjectHandle AddLinearDimension(const WorldPt& p1, const WorldPt& p2, WorldCoord startOffset, const Vector2& direction, short dimensionType, const char* traceName, size_t& ioCreatedCount)
+	static MCObjectHandle AddLinearDimension(const WorldPt& p1, const WorldPt& p2, WorldCoord startOffset, const Vector2& direction, short dimensionType, const char* traceName, const ViewPlane::SViewPlane& plane, size_t& ioCreatedCount)
 	{
 		MCObjectHandle dimension = gSDK->CreateLinearDimension(p1, p2, startOffset, 0.0, direction, dimensionType);
 		if (dimension) {
-			ApplyDimensionPresentation(dimension, traceName);
+			ApplyDimensionPresentation(dimension, plane, traceName);
 			gSDK->AddAfterSwapObject(dimension);
 			++ioCreatedCount;
 			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
@@ -200,11 +205,11 @@ namespace AutoDimensionPlugin
 		return dimension;
 	}
 
-	static MCObjectHandle AddAngleDimension(const WorldPt& center, const WorldPt& p1, const WorldPt& p2, WorldCoord startOffset, const char* traceName, size_t& ioCreatedCount)
+	static MCObjectHandle AddAngleDimension(const WorldPt& center, const WorldPt& p1, const WorldPt& p2, WorldCoord startOffset, const char* traceName, const ViewPlane::SViewPlane& plane, size_t& ioCreatedCount)
 	{
 		MCObjectHandle dimension = gSDK->CreateAngleDimension(center, p1, p2, startOffset);
 		if (dimension) {
-			ApplyDimensionPresentation(dimension, traceName);
+			ApplyDimensionPresentation(dimension, plane, traceName);
 			gSDK->AddAfterSwapObject(dimension);
 			++ioCreatedCount;
 			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
@@ -215,11 +220,105 @@ namespace AutoDimensionPlugin
 		return dimension;
 	}
 
-	static size_t CreateDimensionsForSource(MCObjectHandle sourceObject)
+	// Front, back, left and right views measure the real Z range of the source instead
+	// of the top view projection. The dimensions are created in the coordinates of the
+	// measuring plane, so the horizontal dimension is the extent the camera actually
+	// sees and the vertical dimension is the true model height.
+	static size_t CreateElevationDimensionsForSource(MCObjectHandle sourceObject, const ViewPlane::SViewPlane& plane)
+	{
+		WorldCube objectBounds;
+		gSDK->GetObjectCube(sourceObject, objectBounds);
+
+		ViewPlane::SPlanarBounds cubeBounds;
+		ViewPlane::AddCubeCorners(plane, objectBounds, cubeBounds);
+		if (!cubeBounds.valid) {
+			WriteRuntimeTrace("dimension-tool elevation bounds failed " + DescribeObject(sourceObject));
+			return 0;
+		}
+
+		// The object cube is the only source of a real Z range, but it is generous for
+		// rotated symbols and lighting devices. The plane axes never carry a Z
+		// component, so the traversed 2D geometry can tighten the horizontal range
+		// without touching the measured height.
+		double minU = cubeBounds.minU;
+		double maxU = cubeBounds.maxU;
+		const char* horizontalSource = "object-cube";
+		ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(sourceObject);
+		ComplexGeometry::SAxisAlignedBounds geometryBounds;
+		if (ComplexGeometry::CalculateAxisAlignedBounds(geometry, geometryBounds)) {
+			ViewPlane::SPlanarBounds geometryPlanar;
+			const double xs[2] = { geometryBounds.minX, geometryBounds.maxX };
+			const double ys[2] = { geometryBounds.minY, geometryBounds.maxY };
+			for (double x : xs) {
+				for (double y : ys) {
+					geometryPlanar.Add(ViewPlane::Project(plane, WorldPt3(x, y, objectBounds.MinZ())));
+				}
+			}
+			if (geometryPlanar.valid &&
+				geometryPlanar.Width() > kGeometryTolerance &&
+				geometryPlanar.Width() <= cubeBounds.Width() + kGeometryTolerance) {
+				minU = geometryPlanar.minU;
+				maxU = geometryPlanar.maxU;
+				horizontalSource = "2d-geometry";
+			}
+		}
+
+		const WorldCoord width = maxU - minU;
+		const WorldCoord height = cubeBounds.Height();
+		const WorldCoord offset = std::max<WorldCoord>(25.0, std::max(width, height) * 0.15);
+
+		size_t createdCount = 0;
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		if (width > kGeometryTolerance) {
+			AddLinearDimension(
+				WorldPt(minU, cubeBounds.minV),
+				WorldPt(maxU, cubeBounds.minV),
+				-offset,
+				Vector2(0.0, 0.0),
+				kLinearDimensionTypeOrtho,
+				"view-width",
+				plane,
+				createdCount);
+		}
+		if (height > kGeometryTolerance) {
+			AddLinearDimension(
+				WorldPt(maxU, cubeBounds.minV),
+				WorldPt(maxU, cubeBounds.maxV),
+				offset,
+				Vector2(0.0, 0.0),
+				kLinearDimensionTypeOrtho,
+				"view-depth",
+				plane,
+				createdCount);
+		}
+		if (createdCount > 0) {
+			gSDK->EndUndoEvent();
+		}
+
+		std::ostringstream trace;
+		trace.precision(12);
+		trace << "dimension-tool elevation " << DescribeObject(sourceObject)
+			<< " plane=" << plane.name
+			<< " measuredWidth=" << width
+			<< " measuredHeight=" << height
+			<< " horizontalSource=" << horizontalSource
+			<< " zMin=" << objectBounds.MinZ()
+			<< " zMax=" << objectBounds.MaxZ()
+			<< " offset=" << offset
+			<< " created=" << createdCount;
+		WriteRuntimeTrace(trace.str());
+		return createdCount;
+	}
+
+	static size_t CreateDimensionsForSource(MCObjectHandle sourceObject, const ViewPlane::SViewPlane& plane)
 	{
 		if (!IsSupportedSource(sourceObject)) {
 			WriteRuntimeTrace("dimension-tool rejected source");
 			return 0;
+		}
+
+		if (plane.planar) {
+			return CreateElevationDimensionsForSource(sourceObject, plane);
 		}
 
 		WorldCube objectBounds;
@@ -302,10 +401,10 @@ namespace AutoDimensionPlugin
 		size_t createdCount = 0;
 		gSDK->SetUndoMethod(kUndoSwapObjects);
 		if (shouldCreateOverall && width > kGeometryTolerance) {
-			AddLinearDimension(leftBottom, rightBottom, -offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "horizontal", createdCount);
+			AddLinearDimension(leftBottom, rightBottom, -offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "horizontal", plane, createdCount);
 		}
 		if (shouldCreateOverall && height > kGeometryTolerance) {
-			AddLinearDimension(rightBottom, rightTop, offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "vertical", createdCount);
+			AddLinearDimension(rightBottom, rightTop, offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "vertical", plane, createdCount);
 		}
 
 		if (hasLineMeasurement && std::abs(lineMeasurement.dx) > kGeometryTolerance && std::abs(lineMeasurement.dy) > kGeometryTolerance) {
@@ -319,13 +418,14 @@ namespace AutoDimensionPlugin
 				lineDirection,
 				kLinearDimensionTypeAligned,
 				"aligned-length",
+				plane,
 				createdCount);
 
 			WorldPt angleCenter;
 			WorldPt angleP1;
 			WorldPt angleP2;
 			if (GetLineAngleDefinition(lineMeasurement, offset, angleCenter, angleP1, angleP2)) {
-				AddAngleDimension(angleCenter, angleP1, angleP2, offset * 1.25, "angle", createdCount);
+				AddAngleDimension(angleCenter, angleP1, angleP2, offset * 1.25, "angle", plane, createdCount);
 			}
 		}
 		else if (!hasLineMeasurement && dominantAxis.valid) {
@@ -347,6 +447,7 @@ namespace AutoDimensionPlugin
 						direction,
 						kLinearDimensionTypeAligned,
 						"open-path-segment",
+						plane,
 						createdCount);
 				}
 			}
@@ -365,6 +466,7 @@ namespace AutoDimensionPlugin
 						Vector2(dominantAxis.direction.x, dominantAxis.direction.y),
 						kLinearDimensionTypeAligned,
 						"oriented-width",
+						plane,
 						createdCount);
 				}
 				if (orientedBounds.height > kGeometryTolerance) {
@@ -375,6 +477,7 @@ namespace AutoDimensionPlugin
 						Vector2(-dominantAxis.direction.y, dominantAxis.direction.x),
 						kLinearDimensionTypeAligned,
 						"oriented-height",
+						plane,
 						createdCount);
 				}
 			}
@@ -386,7 +489,7 @@ namespace AutoDimensionPlugin
 					WorldPt angleP1;
 					WorldPt angleP2;
 					if (GetLineAngleDefinition(dominantMeasurement, offset, angleCenter, angleP1, angleP2)) {
-						AddAngleDimension(angleCenter, angleP1, angleP2, offset * 1.25, "dominant-angle", createdCount);
+						AddAngleDimension(angleCenter, angleP1, angleP2, offset * 1.25, "dominant-angle", plane, createdCount);
 					}
 				}
 			}
@@ -433,18 +536,46 @@ namespace AutoDimensionPlugin
 		return selectedSources;
 	}
 
-	static SSelectionDimensionResult CreateDimensionsForSelection(const std::vector<MCObjectHandle>& selectedSources)
+	static SSelectionDimensionResult CreateDimensionsForSelection(const std::vector<MCObjectHandle>& selectedSources, const ViewPlane::SViewPlane& plane)
 	{
 		SSelectionDimensionResult result;
 		result.sourceCount = selectedSources.size();
 		for (MCObjectHandle sourceObject : selectedSources) {
-			result.dimensionCount += CreateDimensionsForSource(sourceObject);
+			result.dimensionCount += CreateDimensionsForSource(sourceObject, plane);
 		}
 
 		WriteRuntimeTrace("selection-batch selected=" + std::to_string(gSDK->NumSelectedObjects())
 			+ " sources=" + std::to_string(result.sourceCount)
+			+ " plane=" + plane.name
 			+ " dimensions=" + std::to_string(result.dimensionCount));
 		return result;
+	}
+
+	// One measuring plane is shared by a whole batch so every dimension of one run stays
+	// coplanar.
+	static WorldCube GetSourcesCube(const std::vector<MCObjectHandle>& sources)
+	{
+		WorldCube totalCube;
+		bool hasCube = false;
+		for (MCObjectHandle sourceObject : sources) {
+			WorldCube objectCube;
+			gSDK->GetObjectCube(sourceObject, objectCube);
+			if (!hasCube) {
+				totalCube = objectCube;
+				hasCube = true;
+			}
+			else {
+				totalCube.Unite(objectCube);
+			}
+		}
+		return totalCube;
+	}
+
+	static ViewPlane::SViewPlane BeginViewPlaneForSources(const std::vector<MCObjectHandle>& sources)
+	{
+		ViewPlane::SViewPlane plane = ViewPlane::Begin(GetSourcesCube(sources));
+		WriteRuntimeTrace(ViewPlane::Describe(plane));
+		return plane;
 	}
 
 	struct SSpacingSource
@@ -453,8 +584,31 @@ namespace AutoDimensionPlugin
 		WorldCoord extent = 0.0;
 	};
 
-	static bool GetSpacingSource(MCObjectHandle sourceObject, SSpacingSource& outSource)
+	static bool GetSpacingSource(MCObjectHandle sourceObject, const ViewPlane::SViewPlane& plane, SSpacingSource& outSource)
 	{
+		if (plane.planar) {
+			WorldCube objectBounds;
+			gSDK->GetObjectCube(sourceObject, objectBounds);
+			ViewPlane::SPlanarBounds planarBounds;
+			ViewPlane::AddCubeCorners(plane, objectBounds, planarBounds);
+			if (!planarBounds.valid ||
+				(planarBounds.Width() <= kGeometryTolerance && planarBounds.Height() <= kGeometryTolerance)) {
+				return false;
+			}
+
+			WorldPt3 center = ViewPlane::GetCubeCenter(objectBounds);
+			const short planarObjectType = gSDK->GetObjectTypeN(sourceObject);
+			if (planarObjectType == kSymbolNode || planarObjectType == kParametricNode) {
+				TransformMatrix entityMatrix;
+				gSDK->GetEntityMatrix(sourceObject, entityMatrix);
+				center = WorldPt3(entityMatrix.P().x, entityMatrix.P().y, entityMatrix.P().z);
+			}
+
+			outSource.center = ViewPlane::Project(plane, center);
+			outSource.extent = std::max<WorldCoord>(planarBounds.Width(), planarBounds.Height());
+			return true;
+		}
+
 		ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(sourceObject);
 		ComplexGeometry::SAxisAlignedBounds bounds;
 		if (ComplexGeometry::CalculateAxisAlignedBounds(geometry, bounds)) {
@@ -487,12 +641,12 @@ namespace AutoDimensionPlugin
 		return true;
 	}
 
-	static size_t CreateSpacingDimensionsForSelection(const std::vector<MCObjectHandle>& selectedSources)
+	static size_t CreateSpacingDimensionsForSelection(const std::vector<MCObjectHandle>& selectedSources, const ViewPlane::SViewPlane& plane)
 	{
 		std::vector<SSpacingSource> spacingSources;
 		for (MCObjectHandle sourceObject : selectedSources) {
 			SSpacingSource spacingSource;
-			if (GetSpacingSource(sourceObject, spacingSource)) {
+			if (GetSpacingSource(sourceObject, plane, spacingSource)) {
 				spacingSources.push_back(spacingSource);
 			}
 		}
@@ -544,6 +698,7 @@ namespace AutoDimensionPlugin
 						Vector2(dx / length, dy / length),
 						kLinearDimensionTypeAligned,
 						"center-spacing",
+						plane,
 						createdCount);
 				}
 			}
@@ -566,6 +721,7 @@ namespace AutoDimensionPlugin
 			gSDK->EndUndoEvent();
 		}
 		WriteRuntimeTrace("spacing-batch sources=" + std::to_string(spacingSources.size())
+			+ " plane=" + plane.name
 			+ " dimensions=" + std::to_string(createdCount));
 		return createdCount;
 	}
@@ -991,13 +1147,18 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 			gSDK->AlertInform("Select at least two fixtures before using Fixture Spacing mode.");
 			return;
 		}
-		if (CreateSpacingDimensionsForSelection(selectedSources) == 0) {
+		ViewPlane::SViewPlane spacingPlane = BeginViewPlaneForSources(selectedSources);
+		const size_t spacingCount = CreateSpacingDimensionsForSelection(selectedSources, spacingPlane);
+		ViewPlane::End(spacingPlane);
+		if (spacingCount == 0) {
 			gSDK->AlertInform("No measurable center-to-center spacing was found.");
 		}
 		return;
 	}
 	if (!selectedSources.empty()) {
-		const SSelectionDimensionResult result = CreateDimensionsForSelection(selectedSources);
+		ViewPlane::SViewPlane selectionPlane = BeginViewPlaneForSources(selectedSources);
+		const SSelectionDimensionResult result = CreateDimensionsForSelection(selectedSources, selectionPlane);
+		ViewPlane::End(selectionPlane);
 		if (result.dimensionCount == 0) {
 			gSDK->AlertInform("No measurable horizontal or vertical extent was found.");
 		}
@@ -1021,7 +1182,10 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		return;
 	}
 
-	if (CreateDimensionsForSource(sourceObject) == 0) {
+	ViewPlane::SViewPlane clickPlane = BeginViewPlaneForSources({ sourceObject });
+	const size_t clickDimensionCount = CreateDimensionsForSource(sourceObject, clickPlane);
+	ViewPlane::End(clickPlane);
+	if (clickDimensionCount == 0) {
 		WriteRuntimeTrace("tool-complete dimension creation failed");
 		gSDK->AlertInform("No measurable horizontal or vertical extent was found.");
 	}

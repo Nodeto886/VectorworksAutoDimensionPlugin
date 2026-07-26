@@ -43,6 +43,8 @@ The trace records picked object type and UUID, 3D bounds, proxy creation, object
 - Spotlight: Lighting Device objects with accessories and multiple view components.
 - 3D geometry: extrusion, sweep, mesh, generic solid, and rotated objects away from the ground plane.
 - Graphic Legend views: Top/Plan, Top, Front, Back, Left, and Right.
+- Direct tool views: Top/Plan and Top keep the ground plane, Front, Back, Left, and Right measure the real Z range, and the isometric views fall back to the ground plane.
+- Working plane lifecycle: the plane in use before an elevation run is restored afterwards, including runs that create no dimension at all.
 - Lifecycle: source edit, source delete, duplicate, undo/redo, document reopen, layer/class visibility, and broken UUID recovery.
 - Performance: repeated Graphic Legend resets and large selections without recursive proxy creation.
 
@@ -52,4 +54,14 @@ The ordinary tool now treats a 2D line as a special measured primitive. It reads
 
 The direct tool uses `ForEachPolyEdge` for polygon and polyline edges, `FirstMemberObj` for groups and parametric generated geometry, and `GetDefinition` plus entity matrices for nested symbol instances. Open paths add at most three longest straight-edge dimensions. Closed paths, groups, symbols, and lighting devices add oriented overall width, height, and a dominant-axis angle only when the derived axis is meaningfully rotated.
 
-Overall projected width and height remain the fallback for curves, meshes, generic solids, and geometry that reaches a traversal limit. True 3D view-depth measurement and lighting-field-specific measurement points remain separate rules.
+Overall projected width and height remain the fallback for curves, meshes, generic solids, and geometry that reaches a traversal limit. Lighting-field-specific measurement points remain a separate rule.
+
+## View-dependent measuring plane
+
+`GetCurrentView` returns a `TStandardView`. `standardViewFront`, `standardViewBack`, `standardViewLeft` and `standardViewRight` switch the tool to elevation measuring; every other value, including Top/Plan and the isometric views, keeps the ground-plane behaviour.
+
+An elevation run builds an `Axis` whose `i` is screen right, `j` is world Z and `k` points at the camera, with the vertex on the face of the batch bounding cube that faces the camera. The tool then calls `GetWorkingPlane` to remember the user plane, `NewWorkingPlane` to install the measuring plane, and `GetWorkingPlanePlanarRefID` to get the `TPlanarRefID` that every created dimension is tagged with through `SetPlanarRefID`. `NewWorkingPlane` restores the saved plane once the batch is finished, and the whole plane switch happens outside the per-object undo events.
+
+Model points are converted with `ModelPtToPlanarPt`; the plain dot product against the axis vectors is the fallback when that call fails. The Z range comes from `GetObjectCube`, which is the only 3D bounds call in the SDK, so a rotated symbol or lighting device reports the height of its bounding cube. The in-plane horizontal range is tightened with the traversed 2D geometry because the plane axes never carry a Z component.
+
+If `GetWorkingPlanePlanarRefID` returns 0 the dimensions would silently land on the ground plane and read as a degenerate line in the elevation, so the tool restores the working plane and falls back to the documented plan behaviour. The runtime trace records this as `planarRefFailed=true`.
