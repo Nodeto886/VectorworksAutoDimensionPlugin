@@ -31,7 +31,10 @@ jobs:
   build:
     runs-on: macos-14
     env:
-      SDK_TOKEN: ${{ secrets.VECTORWORKS_MAC_SDK_TOKEN }}
+      R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.VECTORWORKS_SDK_R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.VECTORWORKS_SDK_R2_SECRET_ACCESS_KEY }}
     strategy:
       fail-fast: false
       matrix:
@@ -43,21 +46,25 @@ jobs:
       - name: Download Vectorworks Mac SDK
         shell: bash
         env:
-          SDK_URL: ${{ matrix.version == 2025 && secrets.VECTORWORKS_MAC_SDK_2025_URL || secrets.VECTORWORKS_MAC_SDK_2026_URL }}
           SDK_SHA256: ${{ matrix.version == 2025 && secrets.VECTORWORKS_MAC_SDK_2025_SHA256 || secrets.VECTORWORKS_MAC_SDK_2026_SHA256 }}
         run: |
           set -euo pipefail
-          : "${SDK_URL:?Set the version-specific Vectorworks Mac SDK URL secret}"
+          : "${R2_ENDPOINT:?Set CLOUDFLARE_R2_ENDPOINT}"
+          : "${R2_BUCKET:?Set CLOUDFLARE_R2_BUCKET}"
+          : "${R2_ACCESS_KEY_ID:?Set VECTORWORKS_SDK_R2_ACCESS_KEY_ID}"
+          : "${R2_SECRET_ACCESS_KEY:?Set VECTORWORKS_SDK_R2_SECRET_ACCESS_KEY}"
           : "${SDK_SHA256:?Set the version-specific Vectorworks Mac SDK SHA256 secret}"
-          archive="$RUNNER_TEMP/vectorworks-sdk.zip"
-          if [[ -n "${SDK_TOKEN:-}" ]]; then
-            curl --fail --location --retry 3 --header "Authorization: Bearer $SDK_TOKEN" "$SDK_URL" --output "$archive"
-          else
-            curl --fail --location --retry 3 "$SDK_URL" --output "$archive"
-          fi
+          archive="$RUNNER_TEMP/vectorworks-mac-sdk-${{ matrix.version }}.tar.gz"
+          AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+          AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+          AWS_DEFAULT_REGION=auto \
+          aws s3 cp \
+            "s3://$R2_BUCKET/sdk/vectorworks-mac-sdk-${{ matrix.version }}.tar.gz" \
+            "$archive" \
+            --endpoint-url "$R2_ENDPOINT"
           echo "$SDK_SHA256  $archive" | shasum -a 256 --check -
           mkdir -p "$RUNNER_TEMP/vectorworks-sdk"
-          ditto -x -k "$archive" "$RUNNER_TEMP/vectorworks-sdk"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/vectorworks-sdk"
           sdk_lib="$(find "$RUNNER_TEMP/vectorworks-sdk" -type d -name SDKLib -print -quit)"
           [[ -n "$sdk_lib" && -d "$sdk_lib/Include" && -d "$sdk_lib/LibMac" ]]
           echo "SDK_ROOT=$sdk_lib" >> "$GITHUB_ENV"
