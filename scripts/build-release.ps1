@@ -51,7 +51,7 @@ foreach ($targetVersion in $Version) {
     $buildIntermediate = Join-Path $OutputRoot "build\$targetVersion"
     New-Item -ItemType Directory -Force -Path $buildOutput, $buildIntermediate | Out-Null
 
-    & $msbuild $project /p:Configuration=Release /p:Platform=x64 /p:VectorworksSDKRoot="$sdkRoot" /p:BranchPath="$sdkRoot" /p:PlatformToolset=v143 /p:VCToolsVersion= /p:OutDir="$buildOutput\" /p:IntDir="$buildIntermediate\" /m
+    & $msbuild $project /p:Configuration=Release /p:Platform=x64 /p:VectorworksSDKRoot="$sdkRoot" /p:BranchPath="$sdkRoot" /p:PlatformToolset=v143 /p:OutDir="$buildOutput\" /p:IntDir="$buildIntermediate\" /m
     if ($LASTEXITCODE -ne 0) {
         throw "MSBuild failed for Vectorworks $targetVersion"
     }
