@@ -39,28 +39,29 @@ jobs:
       R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
       R2_ACCESS_KEY_ID: ${{ secrets.VECTORWORKS_SDK_R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.VECTORWORKS_SDK_R2_SECRET_ACCESS_KEY }}
+      SDK_SHA256_2025: ${{ secrets.VECTORWORKS_WIN_SDK_2025_SHA256 }}
+      SDK_SHA256_2026: ${{ secrets.VECTORWORKS_WIN_SDK_2026_SHA256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Download Vectorworks Windows SDK
         shell: pwsh
-        env:
-          SDK_SHA256: ${{ matrix.version == 2025 && secrets.VECTORWORKS_WIN_SDK_2025_SHA256 || secrets.VECTORWORKS_WIN_SDK_2026_SHA256 }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:R2_ENDPOINT)) { throw 'Set CLOUDFLARE_R2_ENDPOINT' }
           if ([string]::IsNullOrWhiteSpace($env:R2_BUCKET)) { throw 'Set CLOUDFLARE_R2_BUCKET' }
           if ([string]::IsNullOrWhiteSpace($env:R2_ACCESS_KEY_ID)) { throw 'Set VECTORWORKS_SDK_R2_ACCESS_KEY_ID' }
           if ([string]::IsNullOrWhiteSpace($env:R2_SECRET_ACCESS_KEY)) { throw 'Set VECTORWORKS_SDK_R2_SECRET_ACCESS_KEY' }
-          if ([string]::IsNullOrWhiteSpace($env:SDK_SHA256)) { throw 'Set the version-specific Vectorworks Windows SDK SHA256 secret' }
+          $expectedSha256 = if ('${{ matrix.version }}' -eq '2025') { $env:SDK_SHA256_2025 } else { $env:SDK_SHA256_2026 }
+          if ([string]::IsNullOrWhiteSpace($expectedSha256)) { throw 'Set the version-specific Vectorworks Windows SDK SHA256 secret' }
           $archive = Join-Path $env:RUNNER_TEMP "vectorworks-win-sdk-${{ matrix.version }}.zip"
           $env:AWS_ACCESS_KEY_ID = $env:R2_ACCESS_KEY_ID
           $env:AWS_SECRET_ACCESS_KEY = $env:R2_SECRET_ACCESS_KEY
           $env:AWS_DEFAULT_REGION = 'auto'
           aws s3 cp "s3://$env:R2_BUCKET/sdk/Vectorworks-${{ matrix.version }}-win-SDK.zip" $archive --endpoint-url $env:R2_ENDPOINT
           $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToUpperInvariant()
-          if ($actual -ne $env:SDK_SHA256.ToUpperInvariant()) { throw "SDK SHA256 mismatch: $actual" }
+          if ($actual -ne $expectedSha256.ToUpperInvariant()) { throw "SDK SHA256 mismatch: $actual" }
           $sdkStage = Join-Path $env:RUNNER_TEMP "vectorworks-win-sdk-${{ matrix.version }}"
           Expand-Archive -LiteralPath $archive -DestinationPath $sdkStage -Force
           $sdkLib = Get-ChildItem -LiteralPath $sdkStage -Directory -Recurse -Filter SDKLib | Select-Object -First 1
