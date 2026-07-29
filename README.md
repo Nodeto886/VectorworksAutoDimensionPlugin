@@ -92,7 +92,7 @@ Mac 版本使用 Xcode 工程构建，产物为 `KeeplAutoDimTest.vwlibrary`。V
 - `VECTORWORKS_MAC_SDK_2025_SHA256` / `VECTORWORKS_MAC_SDK_2026_SHA256`：对应 ZIP 的 SHA-256
 - `VECTORWORKS_MAC_SDK_TOKEN`：可选的 Bearer Token
 
-推送到 `main` 或 `codex/**` 会按版本分别执行 macOS 构建，并上传两个 ZIP artifact。手动运行工作流并打开 `publish` 时，还需要配置 `CLOUDFLARE_R2_ENDPOINT`、`CLOUDFLARE_R2_BUCKET`、`CLOUDFLARE_R2_ACCESS_KEY_ID` 和 `CLOUDFLARE_R2_SECRET_ACCESS_KEY`，工作流会把 ZIP 发布到 R2 的 `vectorworks/` 目录。
+推送到 `main` 或 `codex/**` 会按版本分别执行 macOS 构建，并上传两个 ZIP artifact。手动运行工作流并打开 `publish`，或在 push 的提交信息中加入 `[publish-mac]` 时，还需要配置 `CLOUDFLARE_R2_ENDPOINT`、`CLOUDFLARE_R2_BUCKET`、`CLOUDFLARE_R2_ACCESS_KEY_ID` 和 `CLOUDFLARE_R2_SECRET_ACCESS_KEY`，工作流会把 ZIP 发布到 R2 的 `vectorworks/` 目录。
 
 GitHub Actions 使用 `macos-14`，需要在 SDK ZIP 中保留完整的 `SDKLib/Include`、`SDKLib/LibMac` 和 `SDKLib/ToolsMac/BuildVWR/BuildVWR`。
 

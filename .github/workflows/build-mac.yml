@@ -85,7 +85,7 @@ jobs:
           if-no-files-found: error
 
       - name: Configure AWS CLI for Cloudflare R2
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-mac]')) }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -95,7 +95,7 @@ jobs:
           : "${AWS_SECRET_ACCESS_KEY:?Set CLOUDFLARE_R2_SECRET_ACCESS_KEY}"
 
       - name: Publish Mac ZIPs to Cloudflare R2
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-mac]')) }}
         env:
           R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
