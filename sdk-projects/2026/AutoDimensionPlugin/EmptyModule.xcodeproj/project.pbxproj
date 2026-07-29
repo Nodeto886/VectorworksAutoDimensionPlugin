@@ -10,7 +10,6 @@
 		862E15BA121D866C00DE5D4F /* ModuleMain.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 862E15B9121D866C00DE5D4F /* ModuleMain.cpp */; };
 		862E15BB121D866C00DE5D4F /* AutoDimensionObj.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 862E15BC121D866C00DE5D4F /* AutoDimensionObj.cpp */; };
 		8665B5931379C44A00C5CB5F /* VWMM.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8665B58E1379C43700C5CB5F /* VWMM.framework */; };
-		9216EA5509D889F4007B8710 /* SafeMemory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 92347A560992C4AA00FCBD91 /* SafeMemory.cpp */; };
 		928E894715795E5F0021D3C7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 928E894615795E5F0021D3C7 /* Cocoa.framework */; };
 /* End PBXBuildFile section */
 
@@ -30,7 +29,6 @@
 		862E15BC121D866C00DE5D4F /* AutoDimensionObj.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = AutoDimensionObj.cpp; path = Source/AutoDimensionObj.cpp; sourceTree = "<group>"; };
 		8665B58E1379C43700C5CB5F /* VWMM.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = VWMM.framework; path = ../../../SDKLib/LibMac/Release/VWMM.framework; sourceTree = SOURCE_ROOT; };
 		9216EA3E09D88959007B8710 /* KeeplAutoDimTest.vwlibrary */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KeeplAutoDimTest.vwlibrary; sourceTree = BUILT_PRODUCTS_DIR; };
-		92347A560992C4AA00FCBD91 /* SafeMemory.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = SafeMemory.cpp; path = ../../../SDKLib/Include/OnlyMac/Memory/SafeMemory.cpp; sourceTree = SOURCE_ROOT; };
 		928E894615795E5F0021D3C7 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -84,7 +82,6 @@
 			isa = PBXGroup;
 			children = (
 				81494D9209DA5867006864FB /* Prefix */,
-				92347A560992C4AA00FCBD91 /* SafeMemory.cpp */,
 				862E15B9121D866C00DE5D4F /* ModuleMain.cpp */,
 				862E15BC121D866C00DE5D4F /* AutoDimensionObj.cpp */,
 			);
@@ -191,7 +188,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9216EA5509D889F4007B8710 /* SafeMemory.cpp in Sources */,
 				862E15BA121D866C00DE5D4F /* ModuleMain.cpp in Sources */,
 				862E15BB121D866C00DE5D4F /* AutoDimensionObj.cpp in Sources */,
 			);
