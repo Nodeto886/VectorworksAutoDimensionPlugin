@@ -25,8 +25,29 @@ namespace AutoDimensionPlugin
 	static const char* kRuntimeTracePath = "C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-autodim-runtime-2025.txt";
 	static constexpr short kLinearDimensionTypeOrtho = 0;
 	static constexpr short kLinearDimensionTypeAligned = 1;
-	static constexpr size_t kDimensionModeGroup = 0;
-	static constexpr size_t kDimensionModeSpacing = 1;
+	static constexpr size_t kAnnotationModeGroup = 0;
+	static constexpr size_t kEditModeGroup = 1;
+	static constexpr size_t kAnnotationAuto = 0;
+	static constexpr size_t kAnnotationContinuous = 1;
+	static constexpr size_t kAnnotationLine = 2;
+	static constexpr size_t kAnnotationManualBlock = 3;
+	static constexpr size_t kAnnotationIntersection = 4;
+	static constexpr size_t kAnnotationSelection = 5;
+	static constexpr size_t kAnnotationCenters = 6;
+	static constexpr size_t kAnnotationBoundaries = 7;
+	static constexpr size_t kAnnotationClosedSpace = 8;
+	static constexpr size_t kAnnotationEnhanced = 9;
+	static constexpr size_t kEditNone = 0;
+	static constexpr size_t kEditConvert = 1;
+	static constexpr size_t kEditTrim = 2;
+	static constexpr size_t kEditAlign = 3;
+	static constexpr size_t kEditSplitExtend = 4;
+	static constexpr size_t kEditTextDirection = 5;
+	static constexpr size_t kEditPoints = 6;
+	static constexpr size_t kEditMerge = 7;
+	static constexpr size_t kEditAvoid = 8;
+	static constexpr size_t kEditResetText = 9;
+	static constexpr size_t kEditResetTextPosition = 10;
 	static constexpr double kGeometryTolerance = 1e-6;
 	static constexpr double kDimensionTextSizePoints = 9.0;
 	static constexpr double kPi = 3.14159265358979323846;
@@ -84,11 +105,21 @@ namespace AutoDimensionPlugin
 		return "Unknown";
 	}
 
+	static size_t CreateDimensionsForSource(MCObjectHandle sourceObject, const ViewPlane::SViewPlane& plane);
+	static WorldCube GetSourcesCube(const std::vector<MCObjectHandle>& sources);
+
 	static bool IsSupportedSource(MCObjectHandle object)
 	{
 		return object &&
 			gSDK->GetObjectTypeN(object) != dimHeaderNode &&
 			!VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj");
+	}
+
+	static bool IsClosedSpaceSource(MCObjectHandle object)
+	{
+		if (!object) return false;
+		const short type = gSDK->GetObjectTypeN(object);
+		return (type == kPolygonNode || type == kPolylineNode || type == kFreehandPolygonNode) && gSDK->GetPolyShapeClose(object);
 	}
 
 	struct SLineMeasurement
@@ -218,6 +249,314 @@ namespace AutoDimensionPlugin
 			WriteRuntimeTrace(std::string("dimension-tool failed ") + traceName);
 		}
 		return dimension;
+	}
+
+	static MCObjectHandle AddCircularDimension(const WorldPt& center, const WorldPt& end, WorldCoord startOffset, bool radius, const char* traceName, const ViewPlane::SViewPlane& plane, size_t& ioCreatedCount)
+	{
+		const WorldRect box(center, std::hypot(end.x - center.x, end.y - center.y));
+		MCObjectHandle dimension = gSDK->CreateCircularDimension(center, end, startOffset, 0.0, box, radius);
+		if (dimension) {
+			ApplyDimensionPresentation(dimension, plane, traceName);
+			gSDK->AddAfterSwapObject(dimension);
+			++ioCreatedCount;
+			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
+		}
+		return dimension;
+	}
+
+	static MCObjectHandle AddArcLengthDimension(const WorldPt& start, const WorldPt& end, const WorldPt& center, WorldCoord startOffset, bool clockwise, const char* traceName, const ViewPlane::SViewPlane& plane, size_t& ioCreatedCount)
+	{
+		MCObjectHandle dimension = gSDK->CreateArcLengthDimension(start, end, center, startOffset, clockwise, false, true);
+		if (dimension) {
+			ApplyDimensionPresentation(dimension, plane, traceName);
+			gSDK->AddAfterSwapObject(dimension);
+			++ioCreatedCount;
+			WriteRuntimeTrace(std::string("dimension-tool created ") + traceName + " " + DescribeObject(dimension));
+		}
+		return dimension;
+	}
+
+	static bool GetCircularGeometry(MCObjectHandle object, WorldPt& outCenter, WorldPt& outStart, WorldPt& outEnd, bool& outClockwise)
+	{
+		if (!object) return false;
+		const short type = gSDK->GetObjectTypeN(object);
+		if (type != kArcNode) return false;
+
+		double startAngle = 0.0;
+		double sweepAngle = 0.0;
+		WorldCoord radiusX = 0.0;
+		WorldCoord radiusY = 0.0;
+		gSDK->GetArcInfoN(object, startAngle, sweepAngle, outCenter, radiusX, radiusY);
+		if (std::abs(radiusX - radiusY) > kGeometryTolerance || std::abs(radiusX) <= kGeometryTolerance) return false;
+
+		const double startRadians = startAngle * kPi / 180.0;
+		const double endRadians = (startAngle + sweepAngle) * kPi / 180.0;
+		outStart = WorldPt(outCenter.x + radiusX * std::cos(startRadians), outCenter.y + radiusY * std::sin(startRadians));
+		outEnd = WorldPt(outCenter.x + radiusX * std::cos(endRadians), outCenter.y + radiusY * std::sin(endRadians));
+		outClockwise = sweepAngle < 0.0;
+		return true;
+	}
+
+	static bool GetDimensionPoint(MCObjectHandle object, short selector, WorldPt& outPoint)
+	{
+		TVariableBlock value;
+		return object && gSDK->GetObjectVariable(object, selector, value) && value.GetWorldPt(outPoint);
+	}
+
+	static bool GetDimensionReal(MCObjectHandle object, short selector, double& outValue)
+	{
+		TVariableBlock value;
+		return object && gSDK->GetObjectVariable(object, selector, value) && value.GetReal64(outValue);
+	}
+
+	static std::vector<MCObjectHandle> CollectSelectedDimensions()
+	{
+		std::vector<MCObjectHandle> dimensions;
+		VWFC::VWObjects::VWObjectIterator iterator(gSDK->FirstSelectedObject());
+		while (iterator) {
+			MCObjectHandle object = *iterator;
+			if (object && gSDK->GetObjectTypeN(object) == dimHeaderNode) dimensions.push_back(object);
+			iterator.MoveNextSelected();
+		}
+		return dimensions;
+	}
+
+	static bool SetDimensionVariable(MCObjectHandle object, short selector, const TVariableBlock& value)
+	{
+		if (!object || gSDK->GetObjectTypeN(object) != dimHeaderNode) return false;
+		const bool result = gSDK->SetObjectVariable(object, selector, value);
+		if (result) gSDK->ResetObject(object);
+		return result;
+	}
+
+	static size_t CreateEnhancedDimensionsForSource(MCObjectHandle sourceObject, const ViewPlane::SViewPlane& plane)
+	{
+		size_t createdCount = 0;
+		const short type = sourceObject ? gSDK->GetObjectTypeN(sourceObject) : 0;
+		if (type == kArcNode) {
+			WorldPt center;
+			WorldPt start;
+			WorldPt end;
+			bool clockwise = false;
+			if (GetCircularGeometry(sourceObject, center, start, end, clockwise)) {
+				WorldCube cube;
+				gSDK->GetObjectCube(sourceObject, cube);
+				const WorldCoord extent = std::max<WorldCoord>(cube.MaxX() - cube.MinX(), cube.MaxY() - cube.MinY());
+				const WorldCoord offset = std::max<WorldCoord>(25.0, extent * 0.25);
+				gSDK->SetUndoMethod(kUndoSwapObjects);
+				AddCircularDimension(center, end, offset, true, "radius", plane, createdCount);
+				AddCircularDimension(center, end, offset * 1.7, false, "diameter", plane, createdCount);
+				AddArcLengthDimension(start, end, center, offset * 2.4, clockwise, "arc-length", plane, createdCount);
+				if (createdCount > 0) gSDK->EndUndoEvent();
+				return createdCount;
+			}
+		}
+		return CreateDimensionsForSource(sourceObject, plane);
+	}
+
+	static size_t CreateContinuousDimensions(const std::vector<MCObjectHandle>& sources, const ViewPlane::SViewPlane& plane)
+	{
+		std::vector<ComplexGeometry::SMeasuredSegment> segments;
+		for (MCObjectHandle source : sources) {
+			SLineMeasurement line;
+			if (GetLineMeasurement(source, line)) {
+				segments.push_back({line.start, line.end, line.length});
+				continue;
+			}
+			ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(source);
+			segments.insert(segments.end(), geometry.detailSegments.begin(), geometry.detailSegments.end());
+		}
+		std::sort(segments.begin(), segments.end(), [](const auto& a, const auto& b) {
+			return std::min(a.start.x, a.end.x) < std::min(b.start.x, b.end.x);
+		});
+		if (segments.empty()) return 0;
+
+		size_t createdCount = 0;
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		for (size_t index = 0; index < segments.size(); ++index) {
+			const auto& segment = segments[index];
+			const double dx = segment.end.x - segment.start.x;
+			const double dy = segment.end.y - segment.start.y;
+			if (segment.length <= kGeometryTolerance) continue;
+			AddLinearDimension(segment.start, segment.end, -std::max<WorldCoord>(25.0, segment.length * 0.15), Vector2(dx / segment.length, dy / segment.length), kLinearDimensionTypeAligned, "continuous", plane, createdCount);
+		}
+		if (createdCount > 0) gSDK->EndUndoEvent();
+		return createdCount;
+	}
+
+	static size_t CreateIntersectionDimensions(const std::vector<MCObjectHandle>& sources, const ViewPlane::SViewPlane& plane)
+	{
+		std::vector<SLineMeasurement> lines;
+		for (MCObjectHandle source : sources) {
+			SLineMeasurement line;
+			if (GetLineMeasurement(source, line)) lines.push_back(line);
+		}
+		if (lines.size() < 2) return 0;
+		size_t createdCount = 0;
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		std::vector<WorldPt> intersections;
+		for (size_t first = 0; first < lines.size(); ++first) {
+			for (size_t second = first + 1; second < lines.size(); ++second) {
+				const SLineMeasurement& a = lines[first];
+				const SLineMeasurement& b = lines[second];
+				const double det = a.dx * b.dy - a.dy * b.dx;
+				if (std::abs(det) <= kGeometryTolerance) continue;
+				const double qx = b.start.x - a.start.x;
+				const double qy = b.start.y - a.start.y;
+				const double t = (qx * b.dy - qy * b.dx) / det;
+				const double u = (qx * a.dy - qy * a.dx) / det;
+				if (t < -kGeometryTolerance || t > 1.0 + kGeometryTolerance || u < -kGeometryTolerance || u > 1.0 + kGeometryTolerance) continue;
+				const WorldPt intersection(a.start.x + t * a.dx, a.start.y + t * a.dy);
+				bool duplicate = false;
+				for (const WorldPt& existing : intersections) {
+					if (std::hypot(existing.x - intersection.x, existing.y - intersection.y) <= 1e-4) { duplicate = true; break; }
+				}
+				if (duplicate) continue;
+				intersections.push_back(intersection);
+				const double angleA = std::atan2(a.dy, a.dx);
+				const double angleB = std::atan2(b.dy, b.dx);
+				const WorldPt p1(intersection.x + std::cos(angleA) * 100.0, intersection.y + std::sin(angleA) * 100.0);
+				const WorldPt p2(intersection.x + std::cos(angleB) * 100.0, intersection.y + std::sin(angleB) * 100.0);
+				AddAngleDimension(intersection, p1, p2, 50.0 + static_cast<WorldCoord>(intersections.size()) * 20.0, "intersection-angle", plane, createdCount);
+				if (intersections.size() >= 128) break;
+			}
+			if (intersections.size() >= 128) break;
+		}
+		if (createdCount > 0) gSDK->EndUndoEvent();
+		return createdCount;
+	}
+
+	static size_t CreateBoundaryDimensionsForSelection(const std::vector<MCObjectHandle>& sources, const ViewPlane::SViewPlane& plane)
+	{
+		if (sources.empty()) return 0;
+		const WorldCube cube = GetSourcesCube(sources);
+		ViewPlane::SPlanarBounds bounds;
+		if (plane.planar) ViewPlane::AddCubeCorners(plane, cube, bounds);
+		else { bounds.Add(WorldPt(cube.MinX(), cube.MinY())); bounds.Add(WorldPt(cube.MaxX(), cube.MaxY())); }
+		if (!bounds.valid) return 0;
+		const WorldCoord extent = std::max<WorldCoord>(bounds.Width(), bounds.Height());
+		const WorldCoord offset = std::max<WorldCoord>(25.0, extent * 0.15);
+		size_t createdCount = 0;
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		if (bounds.Width() > kGeometryTolerance) AddLinearDimension(WorldPt(bounds.minU, bounds.minV), WorldPt(bounds.maxU, bounds.minV), -offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "selection-boundary-width", plane, createdCount);
+		if (bounds.Height() > kGeometryTolerance) AddLinearDimension(WorldPt(bounds.maxU, bounds.minV), WorldPt(bounds.maxU, bounds.maxV), offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "selection-boundary-height", plane, createdCount);
+		if (createdCount > 0) gSDK->EndUndoEvent();
+		return createdCount;
+	}
+
+	static size_t EditSelectedDimensions(size_t editMode, const ViewPlane::SViewPlane& plane)
+	{
+		const std::vector<MCObjectHandle> dimensions = CollectSelectedDimensions();
+		if (dimensions.empty()) return 0;
+
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		size_t changedCount = 0;
+		std::vector<MCObjectHandle> chainSources;
+		WorldCoord sharedOffset = 0.0;
+		bool hasSharedOffset = false;
+		if (editMode == kEditAlign && GetDimensionReal(dimensions.front(), ovDimStartOffset, sharedOffset)) hasSharedOffset = true;
+		for (MCObjectHandle dimension : dimensions) {
+			WorldPt start;
+			WorldPt end;
+			const bool hasPoints = GetDimensionPoint(dimension, ovDimStartPt, start) && GetDimensionPoint(dimension, ovDimEndPt, end);
+			if (!hasPoints) continue;
+
+			switch (editMode) {
+			case kEditConvert:
+			{
+				const double dx = end.x - start.x;
+				const double dy = end.y - start.y;
+				const double length = std::hypot(dx, dy);
+				if (length > kGeometryTolerance) {
+					MCObjectHandle replacement = gSDK->CreateLinearDimension(start, end, 0.0, 0.0, Vector2(dx / length, dy / length), kLinearDimensionTypeAligned);
+					if (replacement) {
+						ViewPlane::ApplyPlanarRef(replacement, plane);
+						gSDK->AddAfterSwapObject(replacement);
+						gSDK->DeleteObject(dimension);
+						++changedCount;
+					}
+				}
+				break;
+			}
+			case kEditTrim:
+				if (SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(0.0)))) ++changedCount;
+				break;
+			case kEditAlign:
+			{
+				if (hasSharedOffset && SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(sharedOffset)))) ++changedCount;
+				break;
+			}
+			case kEditSplitExtend:
+			{
+				const double dx = end.x - start.x;
+				const double dy = end.y - start.y;
+				const double length = std::hypot(dx, dy);
+				if (length > kGeometryTolerance) {
+					const double extension = std::max<WorldCoord>(10.0, length * 0.05);
+					const WorldPt midpoint((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
+					const Vector2 direction(dx / length, dy / length);
+					MCObjectHandle firstHalf = gSDK->CreateLinearDimension(start, midpoint, 0.0, 0.0, direction, kLinearDimensionTypeAligned);
+					MCObjectHandle secondHalf = gSDK->CreateLinearDimension(midpoint, end, 0.0, 0.0, direction, kLinearDimensionTypeAligned);
+					if (firstHalf && secondHalf) {
+						ApplyDimensionPresentation(firstHalf, plane, "split-first");
+						ApplyDimensionPresentation(secondHalf, plane, "split-second");
+						gSDK->AddAfterSwapObject(firstHalf);
+						gSDK->AddAfterSwapObject(secondHalf);
+						gSDK->DeleteObject(dimension);
+						changedCount += 2;
+					}
+					else {
+						if (firstHalf) gSDK->DeleteObject(firstHalf);
+						if (secondHalf) gSDK->DeleteObject(secondHalf);
+						const WorldPt newStart(start.x - dx / length * extension, start.y - dy / length * extension);
+						const WorldPt newEnd(end.x + dx / length * extension, end.y + dy / length * extension);
+						if (SetDimensionVariable(dimension, ovDimStartPt, TVariableBlock(newStart)) && SetDimensionVariable(dimension, ovDimEndPt, TVariableBlock(newEnd))) ++changedCount;
+					}
+				}
+				break;
+			}
+			case kEditTextDirection:
+				if (SetDimensionVariable(dimension, ovDimTextRotation, TVariableBlock(static_cast<Sint16>(kHorVert)))) ++changedCount;
+				break;
+			case kEditPoints:
+				if (start.x > end.x || (std::abs(start.x - end.x) <= kGeometryTolerance && start.y > end.y)) {
+					if (SetDimensionVariable(dimension, ovDimStartPt, TVariableBlock(end)) && SetDimensionVariable(dimension, ovDimEndPt, TVariableBlock(start))) ++changedCount;
+				}
+				break;
+			case kEditMerge:
+				chainSources.push_back(dimension);
+				break;
+			case kEditAvoid:
+			{
+				WorldCoord offset = 0.0;
+				GetDimensionReal(dimension, ovDimStartOffset, offset);
+				if (SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(offset + 25.0))) && SetDimensionVariable(dimension, ovDimTextPosCalculated, TVariableBlock(false))) ++changedCount;
+				break;
+			}
+			case kEditResetText:
+				if (SetDimensionVariable(dimension, ovDimLeaderText, TVariableBlock(TXString())) && SetDimensionVariable(dimension, ovDimTrailerText, TVariableBlock(TXString())) && SetDimensionVariable(dimension, ovDimNoteText, TVariableBlock(TXString()))) ++changedCount;
+				break;
+			case kEditResetTextPosition:
+				if (SetDimensionVariable(dimension, ovDimTextPosCalculated, TVariableBlock(true)) && SetDimensionVariable(dimension, ovDimTextRotation, TVariableBlock(static_cast<Sint16>(kAlign)))) ++changedCount;
+				break;
+			default:
+				break;
+			}
+		}
+
+		if (editMode == kEditMerge && chainSources.size() >= 2) {
+			for (size_t index = 1; index < chainSources.size(); ++index) {
+				MCObjectHandle chain = gSDK->CreateChainDimension(chainSources[index - 1], chainSources[index]);
+				if (chain) {
+					ViewPlane::ApplyPlanarRef(chain, plane);
+					gSDK->AddAfterSwapObject(chain);
+					++changedCount;
+				}
+			}
+		}
+		if (changedCount > 0) gSDK->EndUndoEvent();
+		WriteRuntimeTrace("dimension-edit mode=" + std::to_string(editMode) + " selected=" + std::to_string(dimensions.size()) + " changed=" + std::to_string(changedCount));
+		return changedCount;
 	}
 
 	// Front, back, left and right views measure the real Z range of the source instead
@@ -1111,16 +1450,38 @@ bool CAutoDimensionObj_EventSink::OnAutoDimMessage_GetDimensionDefinitions(EView
 bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeBarInitProvider* pModeBarInitProvider)
 {
 	const bool result = VWTool_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
-	TXStringArray images;
-	images.Append("KeeplAutoDimTest/Images/KeeplAutoDimTestObjTool.png");
-	images.Append("Vectorworks/Images/ModeViewBar/Line_Button2.png");
-	pModeBarInitProvider->AddRadioModeGroup(fDimensionMode, images);
+	TXStringArray annotationImages;
+	for (size_t index = 0; index < 10; ++index) annotationImages.Append(index == 0 ? "KeeplAutoDimTest/Images/KeeplAutoDimTestObjTool.png" : "Vectorworks/Images/ModeViewBar/Line_Button2.png");
+	pModeBarInitProvider->AddRadioModeGroup(fAnnotationModeGroup, annotationImages);
+
+	TXStringArray editImages;
+	for (size_t index = 0; index < 11; ++index) editImages.Append("Vectorworks/Images/ModeViewBar/Line_Button2.png");
+	pModeBarInitProvider->AddRadioModeGroup(fEditModeGroup, editImages);
 
 	VectorWorks::TVWModeBarButtonHelpArray buttonHelp;
-	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Object dimensions", "Dimension every selected object independently.", VectorWorks::eModeBarButtonType_RadioMode));
-	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Fixture spacing", "Dimension center-to-center spacing between adjacent selected fixtures.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Auto recognize", "Automatically dimension selected objects.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Continuous", "Create consecutive aligned dimensions.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Line object", "Dimension line endpoints and angle.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Manual block", "Place a block dimension from the clicked object.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Intersections", "Dimension the angle at intersecting lines.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Selection", "Dimension every selected object independently.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Centers", "Dimension centers of multiple objects.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Boundaries", "Dimension boundaries of multiple blocks.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Closed space", "Dimension a clicked closed space.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Enhanced", "Create angle, radius, diameter and arc length dimensions.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Edit: none", "Create mode.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Convert", "Convert selected dimensions to aligned dimensions.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Trim", "Trim selected dimension witnesses to the source bounds.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Align", "Align selected dimensions to a common line.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Split / extend", "Split or extend selected dimension endpoints.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Text direction", "Correct selected dimension text direction.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Dimension points", "Correct selected dimension points.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Merge", "Create chain dimensions from adjacent selected dimensions.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Avoid text", "Automatically move text outside overlapping dimension boxes.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Reset text", "Reset selected dimension text.", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("Reset text position", "Reset selected dimension text position.", VectorWorks::eModeBarButtonType_RadioMode));
 	gSDK->SetModeBarButtonsText(buttonHelp);
-	WriteRuntimeTrace("tool-setup mode=" + std::to_string(fDimensionMode));
+	WriteRuntimeTrace("tool-setup annotation-mode=" + std::to_string(fAnnotationMode) + " edit-mode=" + std::to_string(fEditMode));
 	return result;
 }
 
@@ -1132,37 +1493,100 @@ void CAutoDimensionObjDefTool_EventSink::DoSetDown(bool bRestore, const IToolMod
 void CAutoDimensionObjDefTool_EventSink::DoModeEvent(size_t modeGroupID, size_t newButtonID, size_t oldButtonID)
 {
 	(void)oldButtonID;
-	if (modeGroupID == kDimensionModeGroup) {
-		fDimensionMode = newButtonID;
-		WriteRuntimeTrace("tool-mode changed=" + std::to_string(fDimensionMode));
+	if (modeGroupID == kAnnotationModeGroup) {
+		fAnnotationMode = newButtonID;
+		WriteRuntimeTrace("tool-annotation-mode changed=" + std::to_string(fAnnotationMode));
+	}
+	else if (modeGroupID == kEditModeGroup) {
+		fEditMode = newButtonID;
+		WriteRuntimeTrace("tool-edit-mode changed=" + std::to_string(fEditMode));
 	}
 }
 
 void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 {
-	const std::vector<MCObjectHandle> selectedSources = CollectSelectedSources();
-	if (fDimensionMode == kDimensionModeSpacing) {
-		if (selectedSources.size() < 2) {
-			WriteRuntimeTrace("tool-complete spacing rejected selection");
-			gSDK->AlertInform("Select at least two fixtures before using Fixture Spacing mode.");
+	const std::vector<MCObjectHandle> selectedDimensions = CollectSelectedDimensions();
+	if (fEditMode != kEditNone) {
+		if (selectedDimensions.empty()) {
+			gSDK->AlertInform("Select one or more dimension objects before using an edit mode.");
 			return;
 		}
-		ViewPlane::SViewPlane spacingPlane = BeginViewPlaneForSources(selectedSources);
-		const size_t spacingCount = CreateSpacingDimensionsForSelection(selectedSources, spacingPlane);
-		ViewPlane::End(spacingPlane);
-		if (spacingCount == 0) {
-			gSDK->AlertInform("No measurable center-to-center spacing was found.");
-		}
+		ViewPlane::SViewPlane editPlane = BeginViewPlaneForSources(selectedDimensions);
+		const size_t changedCount = EditSelectedDimensions(fEditMode, editPlane);
+		ViewPlane::End(editPlane);
+		if (changedCount == 0) gSDK->AlertInform("The selected dimensions could not be edited.");
 		return;
 	}
+
+	const std::vector<MCObjectHandle> selectedSources = CollectSelectedSources();
+	if (fAnnotationMode == kAnnotationContinuous) {
+		if (selectedSources.empty()) {
+			gSDK->AlertInform("Select line or path objects before using Continuous mode.");
+			return;
+		}
+		ViewPlane::SViewPlane plane = BeginViewPlaneForSources(selectedSources);
+		const size_t count = CreateContinuousDimensions(selectedSources, plane);
+		ViewPlane::End(plane);
+		if (count == 0) gSDK->AlertInform("No measurable path segments were found.");
+		return;
+	}
+	if (fAnnotationMode == kAnnotationIntersection) {
+		ViewPlane::SViewPlane plane = BeginViewPlaneForSources(selectedSources);
+		const size_t count = CreateIntersectionDimensions(selectedSources, plane);
+		ViewPlane::End(plane);
+		if (count == 0) gSDK->AlertInform("Select at least two intersecting line objects.");
+		return;
+	}
+	if (fAnnotationMode == kAnnotationEnhanced) {
+		if (selectedSources.empty()) {
+			gSDK->AlertInform("Select an arc, line, or closed object before using Enhanced mode.");
+			return;
+		}
+		ViewPlane::SViewPlane plane = BeginViewPlaneForSources(selectedSources);
+		size_t count = 0;
+		for (MCObjectHandle source : selectedSources) count += CreateEnhancedDimensionsForSource(source, plane);
+		ViewPlane::End(plane);
+		if (count == 0) gSDK->AlertInform("No enhanced dimension geometry was found.");
+		return;
+	}
+	if (fAnnotationMode == kAnnotationCenters) {
+		if (selectedSources.size() < 2) {
+			gSDK->AlertInform("Select at least two objects before using Centers mode.");
+			return;
+		}
+		ViewPlane::SViewPlane plane = BeginViewPlaneForSources(selectedSources);
+		const size_t count = CreateSpacingDimensionsForSelection(selectedSources, plane);
+		ViewPlane::End(plane);
+		if (count == 0) gSDK->AlertInform("No measurable center-to-center spacing was found.");
+		return;
+	}
+	if (fAnnotationMode == kAnnotationBoundaries || fAnnotationMode == kAnnotationSelection || fAnnotationMode == kAnnotationAuto || fAnnotationMode == kAnnotationLine || fAnnotationMode == kAnnotationManualBlock || fAnnotationMode == kAnnotationClosedSpace) {
 	if (!selectedSources.empty()) {
 		ViewPlane::SViewPlane selectionPlane = BeginViewPlaneForSources(selectedSources);
-		const SSelectionDimensionResult result = CreateDimensionsForSelection(selectedSources, selectionPlane);
+		SSelectionDimensionResult result;
+		if (fAnnotationMode == kAnnotationClosedSpace) {
+			for (MCObjectHandle source : selectedSources) {
+				if (IsClosedSpaceSource(source)) result.dimensionCount += CreateDimensionsForSource(source, selectionPlane);
+			}
+		}
+		else if (fAnnotationMode == kAnnotationBoundaries) {
+			result.dimensionCount = CreateBoundaryDimensionsForSelection(selectedSources, selectionPlane);
+		}
+		else if (fAnnotationMode == kAnnotationLine) {
+			for (MCObjectHandle source : selectedSources) {
+				SLineMeasurement line;
+				if (GetLineMeasurement(source, line)) result.dimensionCount += CreateDimensionsForSource(source, selectionPlane);
+			}
+		}
+		else {
+			result = CreateDimensionsForSelection(selectedSources, selectionPlane);
+		}
 		ViewPlane::End(selectionPlane);
 		if (result.dimensionCount == 0) {
 			gSDK->AlertInform("No measurable horizontal or vertical extent was found.");
 		}
 		return;
+	}
 	}
 
 	MCObjectHandle sourceObject = nullptr;
@@ -1181,9 +1605,15 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		gSDK->AlertInform("Click a symbol, lighting device, line, 2D object, or 3D object.");
 		return;
 	}
+	if (fAnnotationMode == kAnnotationClosedSpace && !IsClosedSpaceSource(sourceObject)) {
+		gSDK->AlertInform("Click a closed polygon or polyline for Closed space mode.");
+		return;
+	}
 
 	ViewPlane::SViewPlane clickPlane = BeginViewPlaneForSources({ sourceObject });
-	const size_t clickDimensionCount = CreateDimensionsForSource(sourceObject, clickPlane);
+	const size_t clickDimensionCount = (fAnnotationMode == kAnnotationEnhanced)
+		? CreateEnhancedDimensionsForSource(sourceObject, clickPlane)
+		: CreateDimensionsForSource(sourceObject, clickPlane);
 	ViewPlane::End(clickPlane);
 	if (clickDimensionCount == 0) {
 		WriteRuntimeTrace("tool-complete dimension creation failed");

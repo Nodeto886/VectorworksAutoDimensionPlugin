@@ -51,6 +51,9 @@ namespace AutoDimensionPlugin
 		virtual void	HandleComplete();
 
 	private:
-		size_t			fDimensionMode = 0;
+		size_t			fAnnotationModeGroup = 0;
+		size_t			fEditModeGroup = 1;
+		size_t			fAnnotationMode = 0;
+		size_t			fEditMode = 0;
 	};
 }
