@@ -1,0 +1,101 @@
+name: Build Vectorworks Mac plugin
+
+on:
+  push:
+    branches: [main, codex/**]
+    paths:
+      - 'include/**'
+      - 'sdk-projects/**'
+      - 'src/**'
+      - 'scripts/build-release-mac.sh'
+      - '.github/workflows/build-mac.yml'
+  pull_request:
+    paths:
+      - 'include/**'
+      - 'sdk-projects/**'
+      - 'src/**'
+      - 'scripts/build-release-mac.sh'
+      - '.github/workflows/build-mac.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload Mac ZIPs to the configured Cloudflare R2 bucket
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      SDK_TOKEN: ${{ secrets.VECTORWORKS_MAC_SDK_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [2025, 2026]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Vectorworks Mac SDK
+        shell: bash
+        env:
+          SDK_URL: ${{ matrix.version == 2025 && secrets.VECTORWORKS_MAC_SDK_2025_URL || secrets.VECTORWORKS_MAC_SDK_2026_URL }}
+          SDK_SHA256: ${{ matrix.version == 2025 && secrets.VECTORWORKS_MAC_SDK_2025_SHA256 || secrets.VECTORWORKS_MAC_SDK_2026_SHA256 }}
+        run: |
+          set -euo pipefail
+          : "${SDK_URL:?Set the version-specific Vectorworks Mac SDK URL secret}"
+          : "${SDK_SHA256:?Set the version-specific Vectorworks Mac SDK SHA256 secret}"
+          archive="$RUNNER_TEMP/vectorworks-sdk.zip"
+          if [[ -n "${SDK_TOKEN:-}" ]]; then
+            curl --fail --location --retry 3 --header "Authorization: Bearer $SDK_TOKEN" "$SDK_URL" --output "$archive"
+          else
+            curl --fail --location --retry 3 "$SDK_URL" --output "$archive"
+          fi
+          echo "$SDK_SHA256  $archive" | shasum -a 256 --check -
+          mkdir -p "$RUNNER_TEMP/vectorworks-sdk"
+          ditto -x -k "$archive" "$RUNNER_TEMP/vectorworks-sdk"
+          sdk_lib="$(find "$RUNNER_TEMP/vectorworks-sdk" -type d -name SDKLib -print -quit)"
+          [[ -n "$sdk_lib" && -d "$sdk_lib/Include" && -d "$sdk_lib/LibMac" ]]
+          echo "SDK_ROOT=$sdk_lib" >> "$GITHUB_ENV"
+
+      - name: Build Vectorworks Mac plugin
+        run: bash scripts/build-release-mac.sh --version "${{ matrix.version }}" --sdk-root "$SDK_ROOT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vectorworks-mac-${{ matrix.version }}
+          path: dist/mac/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Mac.zip
+          if-no-files-found: error
+
+      - name: Configure AWS CLI for Cloudflare R2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          : "${AWS_ACCESS_KEY_ID:?Set CLOUDFLARE_R2_ACCESS_KEY_ID}"
+          : "${AWS_SECRET_ACCESS_KEY:?Set CLOUDFLARE_R2_SECRET_ACCESS_KEY}"
+
+      - name: Publish Mac ZIPs to Cloudflare R2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          : "${R2_ENDPOINT:?Set CLOUDFLARE_R2_ENDPOINT}"
+          : "${R2_BUCKET:?Set CLOUDFLARE_R2_BUCKET}"
+          archive="dist/mac/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Mac.zip"
+          aws s3 cp "$archive" "s3://$R2_BUCKET/vectorworks/$(basename "$archive")" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type application/zip \
+              --cache-control 'public, max-age=0, must-revalidate'

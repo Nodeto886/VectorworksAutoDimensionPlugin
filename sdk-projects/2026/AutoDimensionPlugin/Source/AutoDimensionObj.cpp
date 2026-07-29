@@ -22,7 +22,12 @@ namespace AutoDimensionPlugin
 	static const TXString kOverallHeight = "AD_OverallHeight";
 	static const TXString kOverallDepth = "AD_OverallDepth";
 	static const TXString kSourceUUIDParam = "SourceUUID";
-	static const char* kRuntimeTracePath = "C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-autodim-runtime-2026.txt";
+	static const char* kRuntimeTracePath =
+#ifdef _WINDOWS
+		"C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-autodim-runtime-2026.txt";
+#else
+		"/tmp/vw-autodim-runtime-2026.txt";
+#endif
 	static constexpr short kLinearDimensionTypeOrtho = 0;
 	static constexpr short kLinearDimensionTypeAligned = 1;
 	static constexpr size_t kAnnotationModeGroup = 0;

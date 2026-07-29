@@ -12,7 +12,13 @@
 
 static void WriteKeeplLoadTrace(const char* message, Sint32 value = -1)
 {
-	std::ofstream trace("C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-load-trace-2025.txt", std::ios::app);
+	const char* tracePath =
+#ifdef _WINDOWS
+		"C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-load-trace-2025.txt";
+#else
+		"/tmp/vw-load-trace-2025.txt";
+#endif
+	std::ofstream trace(tracePath, std::ios::app);
 	if (trace.is_open()) {
 		trace << message;
 		if (value != -1) {

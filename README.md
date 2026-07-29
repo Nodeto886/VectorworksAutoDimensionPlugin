@@ -78,6 +78,24 @@
 .\scripts\build-release.ps1 -Package
 ```
 
+### macOS / GitHub Actions
+
+Mac 版本使用 Xcode 工程构建，产物为 `KeeplAutoDimTest.vwlibrary`。Vectorworks SDK 受许可保护，不提交到仓库；本机执行时把 SDK 的 `SDKLib` 目录传给脚本：
+
+```bash
+./scripts/build-release-mac.sh --sdk-root "/path/to/SDKLib"
+```
+
+也可以把 SDK 压缩包放在私有下载地址，然后在 GitHub 仓库的 Actions secrets 配置：
+
+- `VECTORWORKS_MAC_SDK_2025_URL` / `VECTORWORKS_MAC_SDK_2026_URL`：对应版本 SDK ZIP 下载地址
+- `VECTORWORKS_MAC_SDK_2025_SHA256` / `VECTORWORKS_MAC_SDK_2026_SHA256`：对应 ZIP 的 SHA-256
+- `VECTORWORKS_MAC_SDK_TOKEN`：可选的 Bearer Token
+
+推送到 `main` 或 `codex/**` 会按版本分别执行 macOS 构建，并上传两个 ZIP artifact。手动运行工作流并打开 `publish` 时，还需要配置 `CLOUDFLARE_R2_ENDPOINT`、`CLOUDFLARE_R2_BUCKET`、`CLOUDFLARE_R2_ACCESS_KEY_ID` 和 `CLOUDFLARE_R2_SECRET_ACCESS_KEY`，工作流会把 ZIP 发布到 R2 的 `vectorworks/` 目录。
+
+GitHub Actions 使用 `macos-14`，需要在 SDK ZIP 中保留完整的 `SDKLib/Include`、`SDKLib/LibMac` 和 `SDKLib/ToolsMac/BuildVWR/BuildVWR`。
+
 ## 安装
 
 安装单个版本：

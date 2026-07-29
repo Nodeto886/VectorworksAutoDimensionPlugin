@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		862E15BA121D866C00DE5D4F /* ModuleMain.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 862E15B9121D866C00DE5D4F /* ModuleMain.cpp */; };
+		862E15BB121D866C00DE5D4F /* AutoDimensionObj.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 862E15BC121D866C00DE5D4F /* AutoDimensionObj.cpp */; };
 		8665B5931379C44A00C5CB5F /* VWMM.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8665B58E1379C43700C5CB5F /* VWMM.framework */; };
 		9216EA5509D889F4007B8710 /* SafeMemory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 92347A560992C4AA00FCBD91 /* SafeMemory.cpp */; };
 		928E894715795E5F0021D3C7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 928E894615795E5F0021D3C7 /* Cocoa.framework */; };
@@ -26,8 +27,9 @@
 		81494D9909DA5880006864FB /* DebugPrefix.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = DebugPrefix.h; path = Source/Prefix/DebugPrefix.h; sourceTree = "<group>"; };
 		81494D9E09DA5892006864FB /* PluginResource.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = PluginResource.h; path = Resources/PluginResource.h; sourceTree = "<group>"; };
 		862E15B9121D866C00DE5D4F /* ModuleMain.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ModuleMain.cpp; path = Source/ModuleMain.cpp; sourceTree = "<group>"; };
+		862E15BC121D866C00DE5D4F /* AutoDimensionObj.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = AutoDimensionObj.cpp; path = Source/AutoDimensionObj.cpp; sourceTree = "<group>"; };
 		8665B58E1379C43700C5CB5F /* VWMM.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = VWMM.framework; path = ../../../SDKLib/LibMac/Release/VWMM.framework; sourceTree = SOURCE_ROOT; };
-		9216EA3E09D88959007B8710 /* EmptyModule.vwlibrary */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EmptyModule.vwlibrary; sourceTree = BUILT_PRODUCTS_DIR; };
+		9216EA3E09D88959007B8710 /* KeeplAutoDimTest.vwlibrary */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KeeplAutoDimTest.vwlibrary; sourceTree = BUILT_PRODUCTS_DIR; };
 		92347A560992C4AA00FCBD91 /* SafeMemory.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = SafeMemory.cpp; path = ../../../SDKLib/Include/OnlyMac/Memory/SafeMemory.cpp; sourceTree = SOURCE_ROOT; };
 		928E894615795E5F0021D3C7 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -48,7 +50,7 @@
 		034768DDFF38A45A11DB9C8B /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				9216EA3E09D88959007B8710 /* EmptyModule.vwlibrary */,
+				9216EA3E09D88959007B8710 /* KeeplAutoDimTest.vwlibrary */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -84,6 +86,7 @@
 				81494D9209DA5867006864FB /* Prefix */,
 				92347A560992C4AA00FCBD91 /* SafeMemory.cpp */,
 				862E15B9121D866C00DE5D4F /* ModuleMain.cpp */,
+				862E15BC121D866C00DE5D4F /* AutoDimensionObj.cpp */,
 			);
 			name = Source;
 			sourceTree = "<group>";
@@ -126,7 +129,7 @@
 			);
 			name = EmptyModule;
 			productName = Untitled;
-			productReference = 9216EA3E09D88959007B8710 /* EmptyModule.vwlibrary */;
+			productReference = 9216EA3E09D88959007B8710 /* KeeplAutoDimTest.vwlibrary */;
 			productType = "com.apple.product-type.bundle";
 		};
 /* End PBXNativeTarget section */
@@ -190,6 +193,7 @@
 			files = (
 				9216EA5509D889F4007B8710 /* SafeMemory.cpp in Sources */,
 				862E15BA121D866C00DE5D4F /* ModuleMain.cpp in Sources */,
+				862E15BB121D866C00DE5D4F /* AutoDimensionObj.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -213,6 +217,7 @@
 					../../../SDKLib/Include/Interfaces,
 					../../../SDKLib/Include/VWMM,
 					../../../SDKLib/Include,
+					../../../include,
 					./Source,
 					./Resources,
 				);
@@ -233,7 +238,7 @@
 					Carbon,
 					"-lVWSDK",
 				);
-				PRODUCT_NAME = EmptyModule;
+				PRODUCT_NAME = KeeplAutoDimTest;
 				WRAPPER_EXTENSION = "$(VW_LIBRARY_EXTENSION)";
 			};
 			name = "Debug 64";
@@ -255,6 +260,7 @@
 					../../../SDKLib/Include/Interfaces,
 					../../../SDKLib/Include/VWMM,
 					../../../SDKLib/Include,
+					../../../include,
 					./Source,
 					./Resources,
 				);
@@ -275,7 +281,7 @@
 					Carbon,
 					"-lVWSDK",
 				);
-				PRODUCT_NAME = EmptyModule;
+				PRODUCT_NAME = KeeplAutoDimTest;
 				WRAPPER_EXTENSION = "$(VW_LIBRARY_EXTENSION)";
 			};
 			name = "Release 64";

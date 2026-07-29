@@ -15,3 +15,6 @@ vw-load-trace-*.txt
 vw-autodim-runtime-*.txt
 install-quarantine/
 plugin-cache-backup/
+SDKLib/
+.mac-build/
+dist/mac/
