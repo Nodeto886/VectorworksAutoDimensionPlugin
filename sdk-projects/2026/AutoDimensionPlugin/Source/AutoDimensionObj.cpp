@@ -106,6 +106,7 @@ namespace AutoDimensionPlugin
 	}
 
 	static size_t CreateDimensionsForSource(MCObjectHandle sourceObject, const ViewPlane::SViewPlane& plane);
+	static WorldCube GetSourcesCube(const std::vector<MCObjectHandle>& sources);
 
 	static bool IsSupportedSource(MCObjectHandle object)
 	{
@@ -308,8 +309,6 @@ namespace AutoDimensionPlugin
 		return object && gSDK->GetObjectVariable(object, selector, value) && value.GetReal64(outValue);
 	}
 
-	static WorldCube GetSourcesCube(const std::vector<MCObjectHandle>& sources);
-
 	static std::vector<MCObjectHandle> CollectSelectedDimensions()
 	{
 		std::vector<MCObjectHandle> dimensions;
@@ -334,6 +333,8 @@ namespace AutoDimensionPlugin
 	{
 		size_t createdCount = 0;
 		const short type = sourceObject ? gSDK->GetObjectTypeN(sourceObject) : 0;
+
+		// Handle circular arcs
 		if (type == kArcNode) {
 			WorldPt center;
 			WorldPt start;
@@ -352,6 +353,106 @@ namespace AutoDimensionPlugin
 				return createdCount;
 			}
 		}
+
+		// Handle ovals (ellipses)
+		if (type == kOvalNode) {
+			double startAngle = 0.0;
+			double sweepAngle = 0.0;
+			WorldPt center;
+			WorldCoord radiusX = 0.0;
+			WorldCoord radiusY = 0.0;
+			gSDK->GetArcInfoN(sourceObject, startAngle, sweepAngle, center, radiusX, radiusY);
+
+			if (std::abs(radiusX) > kGeometryTolerance && std::abs(radiusY) > kGeometryTolerance) {
+				const bool isCircle = std::abs(radiusX - radiusY) <= kGeometryTolerance;
+				const WorldCoord maxRadius = std::max(radiusX, radiusY);
+				const WorldCoord offset = std::max<WorldCoord>(25.0, maxRadius * 0.25);
+
+				gSDK->SetUndoMethod(kUndoSwapObjects);
+
+				if (isCircle) {
+					const WorldPt endPoint(center.x + radiusX, center.y);
+					AddCircularDimension(center, endPoint, offset, true, "oval-radius", plane, createdCount);
+					AddCircularDimension(center, endPoint, offset * 1.7, false, "oval-diameter", plane, createdCount);
+				}
+				else {
+					// For ellipses, create aligned linear dimensions for major and minor axes
+					const WorldPt majorStart(center.x - radiusX, center.y);
+					const WorldPt majorEnd(center.x + radiusX, center.y);
+					const WorldPt minorStart(center.x, center.y - radiusY);
+					const WorldPt minorEnd(center.x, center.y + radiusY);
+
+					AddLinearDimension(majorStart, majorEnd, offset, Vector2(1.0, 0.0), kLinearDimensionTypeAligned, "ellipse-major-axis", plane, createdCount);
+					AddLinearDimension(minorStart, minorEnd, offset, Vector2(0.0, 1.0), kLinearDimensionTypeAligned, "ellipse-minor-axis", plane, createdCount);
+				}
+
+				if (createdCount > 0) gSDK->EndUndoEvent();
+				WriteRuntimeTrace("enhanced-oval isCircle=" + std::to_string(isCircle) + " radiusX=" + std::to_string(radiusX) + " radiusY=" + std::to_string(radiusY) + " created=" + std::to_string(createdCount));
+				return createdCount;
+			}
+		}
+
+		// Handle polylines with arc vertices
+		if (type == kPolygonNode || type == kPolylineNode) {
+			struct ArcEdgeData {
+				WorldPt start;
+				WorldPt end;
+				WorldCoord radius;
+				VertexType vType;
+			};
+			std::vector<ArcEdgeData> arcEdges;
+
+			auto edgeCallback = [](const WorldPt& start, const WorldPt& control, const WorldPt& end, WorldCoord radius, VertexType vType, Sint8 visible, CallBackPtr, void* env) {
+				if ((vType == vtArc || vType == vtRadius) && std::abs(radius) > kGeometryTolerance) {
+					auto* edges = static_cast<std::vector<ArcEdgeData>*>(env);
+					edges->push_back({start, end, radius, vType});
+				}
+			};
+
+			gSDK->ForEachPolyEdge(sourceObject, edgeCallback, &arcEdges);
+
+			if (!arcEdges.empty()) {
+				WorldCube cube;
+				gSDK->GetObjectCube(sourceObject, cube);
+				const WorldCoord extent = std::max<WorldCoord>(cube.MaxX() - cube.MinX(), cube.MaxY() - cube.MinY());
+				const WorldCoord baseOffset = std::max<WorldCoord>(25.0, extent * 0.15);
+
+				gSDK->SetUndoMethod(kUndoSwapObjects);
+
+				for (size_t i = 0; i < arcEdges.size() && i < 8; ++i) {
+					const ArcEdgeData& arc = arcEdges[i];
+					const WorldCoord dx = arc.end.x - arc.start.x;
+					const WorldCoord dy = arc.end.y - arc.start.y;
+					const WorldCoord chordLength = std::hypot(dx, dy);
+
+					if (chordLength > kGeometryTolerance) {
+						// Calculate arc center from start, end, and radius
+						const WorldCoord midX = (arc.start.x + arc.end.x) * 0.5;
+						const WorldCoord midY = (arc.start.y + arc.end.y) * 0.5;
+						const WorldCoord perpX = -dy / chordLength;
+						const WorldCoord perpY = dx / chordLength;
+						const WorldCoord halfChord = chordLength * 0.5;
+						const WorldCoord absRadius = std::abs(arc.radius);
+
+						if (absRadius > halfChord) {
+							const WorldCoord centerDist = std::sqrt(absRadius * absRadius - halfChord * halfChord);
+							const WorldCoord sign = (arc.radius > 0.0) ? 1.0 : -1.0;
+							const WorldPt center(midX + perpX * centerDist * sign, midY + perpY * centerDist * sign);
+							const bool clockwise = arc.radius < 0.0;
+
+							const WorldCoord offset = baseOffset * (1.0 + static_cast<WorldCoord>(i) * 0.3);
+							AddCircularDimension(center, arc.end, offset, true, "polyline-arc-radius", plane, createdCount);
+							AddArcLengthDimension(arc.start, arc.end, center, offset * 1.5, clockwise, "polyline-arc-length", plane, createdCount);
+						}
+					}
+				}
+
+				if (createdCount > 0) gSDK->EndUndoEvent();
+				WriteRuntimeTrace("enhanced-polyline-arcs arcCount=" + std::to_string(arcEdges.size()) + " created=" + std::to_string(createdCount));
+				return createdCount;
+			}
+		}
+
 		return CreateDimensionsForSource(sourceObject, plane);
 	}
 
@@ -410,10 +511,7 @@ namespace AutoDimensionPlugin
 				const WorldPt intersection(a.start.x + t * a.dx, a.start.y + t * a.dy);
 				bool duplicate = false;
 				for (const WorldPt& existing : intersections) {
-					if (std::hypot(existing.x - intersection.x, existing.y - intersection.y) <= 1e-4) {
-						duplicate = true;
-						break;
-					}
+					if (std::hypot(existing.x - intersection.x, existing.y - intersection.y) <= 1e-4) { duplicate = true; break; }
 				}
 				if (duplicate) continue;
 				intersections.push_back(intersection);
@@ -436,10 +534,7 @@ namespace AutoDimensionPlugin
 		const WorldCube cube = GetSourcesCube(sources);
 		ViewPlane::SPlanarBounds bounds;
 		if (plane.planar) ViewPlane::AddCubeCorners(plane, cube, bounds);
-		else {
-			bounds.Add(WorldPt(cube.MinX(), cube.MinY()));
-			bounds.Add(WorldPt(cube.MaxX(), cube.MaxY()));
-		}
+		else { bounds.Add(WorldPt(cube.MinX(), cube.MinY())); bounds.Add(WorldPt(cube.MaxX(), cube.MaxY())); }
 		if (!bounds.valid) return 0;
 		const WorldCoord extent = std::max<WorldCoord>(bounds.Width(), bounds.Height());
 		const WorldCoord offset = std::max<WorldCoord>(25.0, extent * 0.15);
@@ -486,8 +581,112 @@ namespace AutoDimensionPlugin
 				break;
 			}
 			case kEditTrim:
-				if (SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(0.0)))) ++changedCount;
+			{
+				// Find source geometry near dimension endpoints and set custom witness offsets
+				const double dx = end.x - start.x;
+				const double dy = end.y - start.y;
+				const double length = std::hypot(dx, dy);
+				if (length <= kGeometryTolerance) break;
+
+				// Witness line direction is perpendicular to dimension line
+				const WorldCoord witnessX = -dy / length;
+				const WorldCoord witnessY = dx / length;
+
+				WorldCoord currentOffset = 0.0;
+				GetDimensionReal(dimension, ovDimStartOffset, currentOffset);
+
+				// Search for source objects near the dimension endpoints
+				std::vector<MCObjectHandle> sourceObjects;
+				const WorldCoord searchRadius = std::max<WorldCoord>(10.0, length * 0.1);
+
+				gSDK->ForEachObjectAtPoint(2, start, searchRadius, [&sourceObjects](MCObjectHandle h) {
+					if (IsSupportedSource(h)) {
+						sourceObjects.push_back(h);
+						return true;
+					}
+					return true;
+				});
+
+				gSDK->ForEachObjectAtPoint(2, end, searchRadius, [&sourceObjects](MCObjectHandle h) {
+					if (IsSupportedSource(h)) {
+						bool alreadyAdded = false;
+						for (MCObjectHandle existing : sourceObjects) {
+							if (existing == h) {
+								alreadyAdded = true;
+								break;
+							}
+						}
+						if (!alreadyAdded) sourceObjects.push_back(h);
+					}
+					return true;
+				});
+
+				if (sourceObjects.empty()) {
+					// No sources found, just reset to 0
+					if (SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(0.0)))) ++changedCount;
+					break;
+				}
+
+				// Collect all geometry points from source objects
+				std::vector<WorldPt> geometryPoints;
+				for (MCObjectHandle source : sourceObjects) {
+					ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(source);
+					geometryPoints.insert(geometryPoints.end(), geometry.points.begin(), geometry.points.end());
+				}
+
+				if (geometryPoints.empty()) {
+					if (SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(0.0)))) ++changedCount;
+					break;
+				}
+
+				// Project all geometry points onto the witness line direction
+				// Find maximum projection from start and end points
+				double maxStartProjection = 0.0;
+				double maxEndProjection = 0.0;
+
+				for (const WorldPt& pt : geometryPoints) {
+					// Project point relative to start point
+					const double startDx = pt.x - start.x;
+					const double startDy = pt.y - start.y;
+					const double startProj = startDx * witnessX + startDy * witnessY;
+
+					// Project point relative to end point
+					const double endDx = pt.x - end.x;
+					const double endDy = pt.y - end.y;
+					const double endProj = endDx * witnessX + endDy * witnessY;
+
+					// We want maximum projection toward dimension line (same sign as offset)
+					if (currentOffset >= 0.0) {
+						maxStartProjection = std::max(maxStartProjection, startProj);
+						maxEndProjection = std::max(maxEndProjection, endProj);
+					}
+					else {
+						maxStartProjection = std::min(maxStartProjection, startProj);
+						maxEndProjection = std::min(maxEndProjection, endProj);
+					}
+				}
+
+				// Convert from world coordinates to page inches
+				const double startOffsetPageInches = gSDK->CoordLengthToPageLengthN(std::abs(maxStartProjection));
+				const double endOffsetPageInches = gSDK->CoordLengthToPageLengthN(std::abs(maxEndProjection));
+
+				// Set custom witness offsets
+				bool changed = false;
+				changed |= gSDK->SetObjectVariable(dimension, ovDimWitnessOverride, TVariableBlock(static_cast<Sint16>(4)));
+				changed |= gSDK->SetObjectVariable(dimension, ovDimCustStartWitOffset, TVariableBlock(static_cast<Real64>(startOffsetPageInches)));
+				changed |= gSDK->SetObjectVariable(dimension, ovDimCustEndWitOffset, TVariableBlock(static_cast<Real64>(endOffsetPageInches)));
+
+				if (changed) {
+					gSDK->ResetObject(dimension);
+					++changedCount;
+					WriteRuntimeTrace("edit-trim dimension=" + DescribeObject(dimension)
+						+ " sources=" + std::to_string(sourceObjects.size())
+						+ " points=" + std::to_string(geometryPoints.size())
+						+ " startOffset=" + std::to_string(startOffsetPageInches)
+						+ " endOffset=" + std::to_string(endOffsetPageInches));
+				}
 				break;
+			}
 			case kEditAlign:
 			{
 				if (hasSharedOffset && SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(sharedOffset)))) ++changedCount;
@@ -501,7 +700,6 @@ namespace AutoDimensionPlugin
 				if (length > kGeometryTolerance) {
 					const double extension = std::max<WorldCoord>(10.0, length * 0.05);
 					const WorldPt midpoint((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
-					const double splitLength = length * 0.5;
 					const Vector2 direction(dx / length, dy / length);
 					MCObjectHandle firstHalf = gSDK->CreateLinearDimension(start, midpoint, 0.0, 0.0, direction, kLinearDimensionTypeAligned);
 					MCObjectHandle secondHalf = gSDK->CreateLinearDimension(midpoint, end, 0.0, 0.0, direction, kLinearDimensionTypeAligned);
@@ -536,9 +734,107 @@ namespace AutoDimensionPlugin
 				break;
 			case kEditAvoid:
 			{
-				WorldCoord offset = 0.0;
-				GetDimensionReal(dimension, ovDimStartOffset, offset);
-				if (SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(offset + 25.0))) && SetDimensionVariable(dimension, ovDimTextPosCalculated, TVariableBlock(false))) ++changedCount;
+				// Multi-round collision detection and avoidance
+				struct DimensionBoundsInfo {
+					MCObjectHandle handle;
+					WorldRect bounds;
+					WorldCoord currentOffset;
+					WorldCoord textOffset;
+				};
+
+				std::vector<DimensionBoundsInfo> dimensionBounds;
+
+				// Collect all selected dimensions with their bounds
+				for (MCObjectHandle dim : dimensions) {
+					DimensionBoundsInfo info;
+					info.handle = dim;
+					if (gSDK->GetObjectBounds(dim, info.bounds)) {
+						GetDimensionReal(dim, ovDimStartOffset, info.currentOffset);
+						GetDimensionReal(dim, ovDimTextOffsetInCurrUnits, info.textOffset);
+						dimensionBounds.push_back(info);
+					}
+				}
+
+				if (dimensionBounds.size() < 2) {
+					// Single dimension - just add fixed offset
+					WorldCoord offset = 0.0;
+					GetDimensionReal(dimension, ovDimStartOffset, offset);
+					if (SetDimensionVariable(dimension, ovDimStartOffset, TVariableBlock(static_cast<Real64>(offset + 25.0)))) ++changedCount;
+					break;
+				}
+
+				// Run multiple iterations to resolve collisions
+				const size_t maxIterations = 8;
+				const WorldCoord adjustmentStep = 15.0;
+				size_t iterationCollisions = 0;
+
+				for (size_t iteration = 0; iteration < maxIterations; ++iteration) {
+					iterationCollisions = 0;
+
+					// Check all pairs for overlaps
+					for (size_t i = 0; i < dimensionBounds.size(); ++i) {
+						for (size_t j = i + 1; j < dimensionBounds.size(); ++j) {
+							const WorldRect& rectA = dimensionBounds[i].bounds;
+							const WorldRect& rectB = dimensionBounds[j].bounds;
+
+							// Check for overlap with small tolerance
+							const WorldCoord tolerance = 2.0;
+							const bool overlaps = !(rectA.right + tolerance < rectB.left ||
+								rectB.right + tolerance < rectA.left ||
+								rectA.bottom - tolerance > rectB.top ||
+								rectB.bottom - tolerance > rectA.top);
+
+							if (overlaps) {
+								++iterationCollisions;
+
+								// Determine adjustment strategy based on relative positions
+								const WorldCoord centerAX = (rectA.left + rectA.right) * 0.5;
+								const WorldCoord centerAY = (rectA.top + rectA.bottom) * 0.5;
+								const WorldCoord centerBX = (rectB.left + rectB.right) * 0.5;
+								const WorldCoord centerBY = (rectB.top + rectB.bottom) * 0.5;
+
+								const WorldCoord dx = centerBX - centerAX;
+								const WorldCoord dy = centerBY - centerAY;
+
+								// Adjust dimension with smaller index (to maintain stability)
+								MCObjectHandle dimToAdjust = dimensionBounds[i].handle;
+								WorldCoord& offsetToAdjust = dimensionBounds[i].currentOffset;
+
+								// Try adjusting offset first
+								if (std::abs(dy) > std::abs(dx)) {
+									// Vertical separation - adjust offset
+									offsetToAdjust += (dy > 0.0) ? -adjustmentStep : adjustmentStep;
+									gSDK->SetObjectVariable(dimToAdjust, ovDimStartOffset, TVariableBlock(static_cast<Real64>(offsetToAdjust)));
+									gSDK->ResetObject(dimToAdjust);
+									gSDK->GetObjectBounds(dimToAdjust, dimensionBounds[i].bounds);
+								}
+								else {
+									// Horizontal separation - adjust text offset
+									WorldCoord& textOffsetToAdjust = dimensionBounds[i].textOffset;
+									textOffsetToAdjust += (dx > 0.0) ? -adjustmentStep : adjustmentStep;
+									gSDK->SetObjectVariable(dimToAdjust, ovDimTextOffsetInCurrUnits, TVariableBlock(static_cast<Real64>(textOffsetToAdjust)));
+									gSDK->SetObjectVariable(dimToAdjust, ovDimTextPosCalculated, TVariableBlock(false));
+									gSDK->ResetObject(dimToAdjust);
+									gSDK->GetObjectBounds(dimToAdjust, dimensionBounds[i].bounds);
+								}
+							}
+						}
+					}
+
+					WriteRuntimeTrace("edit-avoid iteration=" + std::to_string(iteration)
+						+ " collisions=" + std::to_string(iterationCollisions)
+						+ " dimensions=" + std::to_string(dimensionBounds.size()));
+
+					// Stop if no more collisions
+					if (iterationCollisions == 0) {
+						break;
+					}
+				}
+
+				changedCount += dimensionBounds.size();
+				WriteRuntimeTrace("edit-avoid completed iterations=" + std::to_string(std::min(maxIterations, dimensionBounds.size()))
+					+ " finalCollisions=" + std::to_string(iterationCollisions)
+					+ " adjusted=" + std::to_string(dimensionBounds.size()));
 				break;
 			}
 			case kEditResetText:
@@ -1511,6 +1807,18 @@ void CAutoDimensionObjDefTool_EventSink::DoModeEvent(size_t modeGroupID, size_t 
 	}
 }
 
+TToolStatus CAutoDimensionObjDefTool_EventSink::GetStatus(const IToolStatusProvider* pStatusProvider)
+{
+	if (fAnnotationMode == kAnnotationManualBlock) {
+		fResult = pStatusProvider->GetTwoPointToolStatus();
+	}
+	else {
+		fResult = pStatusProvider->GetOnePointToolStatus();
+	}
+	this->Default();
+	return fResult;
+}
+
 void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 {
 	const std::vector<MCObjectHandle> selectedDimensions = CollectSelectedDimensions();
@@ -1595,6 +1903,77 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		}
 		return;
 	}
+	}
+
+	// Manual block positioning with two-point interaction
+	if (fAnnotationMode == kAnnotationManualBlock && this->GetToolPointsCount() >= 2) {
+		VWPoint2D firstPoint = this->GetToolPt2D(0);
+		VWPoint2D secondPoint = this->GetToolPt2D(1);
+		WriteRuntimeTrace("tool-complete manual-block pt1=" + FormatPoint(WorldPt(firstPoint.x, firstPoint.y))
+			+ " pt2=" + FormatPoint(WorldPt(secondPoint.x, secondPoint.y)));
+
+		MCObjectHandle sourceObject = nullptr;
+		if (!selectedSources.empty()) {
+			sourceObject = selectedSources.front();
+			WriteRuntimeTrace("tool-complete manual-block using pre-selected " + DescribeObject(sourceObject));
+		}
+		else {
+			const WorldPt searchPoint(firstPoint.x, firstPoint.y);
+			gSDK->ForEachObjectAtPoint(2, searchPoint, 10.0, [&sourceObject](MCObjectHandle h) {
+				if (IsSupportedSource(h)) {
+					sourceObject = h;
+					return false;
+				}
+				return true;
+			});
+			WriteRuntimeTrace("tool-complete manual-block found at point " + DescribeObject(sourceObject));
+		}
+
+		if (!IsSupportedSource(sourceObject)) {
+			gSDK->AlertInform("No valid object found at first point. Click an object first, then click where to place the dimension.");
+			return;
+		}
+
+		WorldCube sourceBounds;
+		gSDK->GetObjectCube(sourceObject, sourceBounds);
+		const WorldCoord minX = sourceBounds.MinX();
+		const WorldCoord minY = sourceBounds.MinY();
+		const WorldCoord maxX = sourceBounds.MaxX();
+		const WorldCoord maxY = sourceBounds.MaxY();
+		const WorldCoord width = maxX - minX;
+		const WorldCoord height = maxY - minY;
+
+		if (width <= kGeometryTolerance && height <= kGeometryTolerance) {
+			gSDK->AlertInform("Selected object has no measurable extent.");
+			return;
+		}
+
+		ViewPlane::SViewPlane manualPlane = BeginViewPlaneForSources({ sourceObject });
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		size_t createdCount = 0;
+
+		const WorldCoord dx = secondPoint.x - (minX + maxX) * 0.5;
+		const WorldCoord dy = secondPoint.y - (minY + maxY) * 0.5;
+		const bool isHorizontal = std::abs(dx) <= std::abs(dy);
+
+		if (isHorizontal && width > kGeometryTolerance) {
+			const WorldCoord offset = secondPoint.y - minY;
+			WriteRuntimeTrace("tool-complete manual-block horizontal offset=" + std::to_string(offset));
+			AddLinearDimension(WorldPt(minX, minY), WorldPt(maxX, minY), offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "manual-horizontal", manualPlane, createdCount);
+		}
+		else if (!isHorizontal && height > kGeometryTolerance) {
+			const WorldCoord offset = secondPoint.x - maxX;
+			WriteRuntimeTrace("tool-complete manual-block vertical offset=" + std::to_string(offset));
+			AddLinearDimension(WorldPt(maxX, minY), WorldPt(maxX, maxY), offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "manual-vertical", manualPlane, createdCount);
+		}
+
+		if (createdCount > 0) gSDK->EndUndoEvent();
+		ViewPlane::End(manualPlane);
+
+		if (createdCount == 0) {
+			gSDK->AlertInform("Could not create dimension at the specified location.");
+		}
+		return;
 	}
 
 	MCObjectHandle sourceObject = nullptr;

@@ -1,0 +1,189 @@
+================================================================================
+VECTORWORKS AUTO DIMENSION PLUGIN - 4 FEATURES IMPLEMENTATION SUMMARY
+================================================================================
+
+Implementation Date: 2026-07-29
+Files Modified:
+  - sdk-projects/2025/AutoDimensionPlugin/Source/AutoDimensionObj.h
+  - sdk-projects/2025/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
+  - sdk-projects/2026/AutoDimensionPlugin/Source/AutoDimensionObj.h
+  - sdk-projects/2026/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
+
+================================================================================
+FEATURE 1: MANUAL BLOCK POSITIONING (kAnnotationManualBlock = 3)
+================================================================================
+
+STATUS: IMPLEMENTED
+
+Changes Made:
+1. Added GetStatus() method to CAutoDimensionObjDefTool_EventSink class
+   - Returns two-point tool status when fAnnotationMode == kAnnotationManualBlock
+   - Returns one-point tool status for other modes
+
+2. Enhanced HandleComplete() method
+   - Checks for two-point interaction: GetToolPointsCount() >= 2
+   - First point: Selects object (uses pre-selection or ForEachObjectAtPoint)
+   - Second point: Determines dimension placement position
+   - Calculates offset based on placement relative to object bounds
+   - Creates horizontal or vertical dimension based on direction
+
+Implementation Details:
+- Uses ForEachObjectAtPoint with 10.0 radius to find objects at first point
+- Determines horizontal vs vertical based on dx/dy comparison
+- For horizontal: offset = secondPoint.y - minY
+- For vertical: offset = secondPoint.x - maxX
+- Includes comprehensive trace logging for debugging
+
+================================================================================
+FEATURE 2: ELLIPSE & COMPLEX CURVE DIMENSIONS
+================================================================================
+
+STATUS: IMPLEMENTED
+
+Changes Made:
+Enhanced CreateEnhancedDimensionsForSource() function to handle:
+
+1. OVALS (kOvalNode):
+   - Uses GetArcInfoN to extract radiusX and radiusY
+   - Detects circles: |radiusX - radiusY| <= tolerance
+   - For circles: Creates radius and diameter dimensions (same as arcs)
+   - For ellipses: Creates aligned linear dimensions for major/minor axes
+   - Major axis: horizontal from (center.x +/- radiusX, center.y)
+   - Minor axis: vertical from (center.x, center.y +/- radiusY)
+
+2. POLYLINES WITH ARC VERTICES (kPolygonNode, kPolylineNode):
+   - Uses ForEachPolyEdge callback to extract arc edge data
+   - Filters for vtArc and vtRadius vertex types
+   - Calculates arc center from start, end, and radius:
+     * Midpoint of chord
+     * Perpendicular direction
+     * Center distance = sqrt(radius^2 - halfChord^2)
+   - Creates radius and arc-length dimensions for each arc (max 8 arcs)
+   - Handles clockwise detection (radius < 0)
+
+Implementation Details:
+- Comprehensive edge case handling (zero radius, invalid geometry)
+- Progressive offset spacing for multiple arcs: offset * (1.0 + i * 0.3)
+- Detailed trace logging with arc counts and creation statistics
+
+================================================================================
+FEATURE 3: WITNESS LINE TRIMMING (kEditTrim case)
+================================================================================
+
+STATUS: IMPLEMENTED
+
+Changes Made:
+Replaced simple zero-offset logic with intelligent geometry detection:
+
+1. Geometry Search:
+   - Calculates witness line direction (perpendicular to dimension)
+   - Uses ForEachObjectAtPoint at both dimension endpoints
+   - Search radius: max(10.0, length * 0.1)
+   - Collects all supported source objects near endpoints
+
+2. Geometry Collection:
+   - Uses ComplexGeometry::Collect for each source object
+   - Extracts all geometry points from sources
+
+3. Projection Calculation:
+   - Projects all geometry points onto witness line direction
+   - Finds maximum projection from start and end points
+   - Handles both positive and negative offsets (direction-aware)
+
+4. Custom Offset Application:
+   - Sets ovDimWitnessOverride = 4 (multiple custom offsets mode)
+   - Converts world coords to page inches: CoordLengthToPageLengthN()
+   - Sets ovDimCustStartWitOffset and ovDimCustEndWitOffset
+   - Calls ResetObject to apply changes
+
+Implementation Details:
+- Fallback to zero offset if no sources found
+- Separate projection tracking for start and end points
+- Direction-aware: uses max for positive offset, min for negative
+- Comprehensive trace logging with point counts and offset values
+
+================================================================================
+FEATURE 4: TEXT COLLISION AVOIDANCE (kEditAvoid case)
+================================================================================
+
+STATUS: IMPLEMENTED
+
+Changes Made:
+Replaced fixed 25.0 offset increment with multi-round collision detection:
+
+1. Bounds Collection:
+   - Collects all selected dimensions with GetObjectBounds
+   - Stores current ovDimStartOffset and ovDimTextOffsetInCurrUnits
+   - Creates DimensionBoundsInfo structure for each dimension
+
+2. Collision Detection Loop:
+   - Runs up to 8 iterations
+   - Checks all dimension pairs for overlaps
+   - Uses 2.0 tolerance for overlap detection
+   - Stops early if no collisions remain
+
+3. Collision Resolution Strategy:
+   - Calculates center points of overlapping bounds
+   - Determines separation direction (dx vs dy)
+   - Vertical separation: Adjusts ovDimStartOffset by +/-15.0
+   - Horizontal separation: Adjusts ovDimTextOffsetInCurrUnits by +/-15.0
+   - Sets ovDimTextPosCalculated = false for text adjustments
+   - Calls ResetObject and GetObjectBounds after each adjustment
+
+4. Iteration Tracking:
+   - Counts collisions per iteration
+   - Logs iteration progress and final collision count
+   - Updates all adjusted dimensions in changedCount
+
+Implementation Details:
+- Single dimension fallback: adds fixed 25.0 offset
+- Adjustment step: 15.0 units per iteration
+- Direction determination: |dy| > |dx| = vertical, else horizontal
+- Adjusts dimension at smaller index (stability)
+- Comprehensive trace logging per iteration
+
+================================================================================
+CODE QUALITY & STANDARDS
+================================================================================
+
+All implementations follow established patterns:
+- Comprehensive error handling and edge case detection
+- Detailed WriteRuntimeTrace calls for debugging
+- Consistent use of kGeometryTolerance for comparisons
+- Proper undo support with kUndoSwapObjects
+- Bounds checking and null pointer validation
+- User-friendly error messages via AlertInform
+- Follows existing code style and naming conventions
+
+================================================================================
+TESTING RECOMMENDATIONS
+================================================================================
+
+Feature 1 - Manual Block Positioning:
+- Test with pre-selected objects
+- Test with click-to-select workflow
+- Test horizontal vs vertical placement detection
+- Test edge cases: zero-size objects, objects at origin
+
+Feature 2 - Ellipse & Complex Curves:
+- Test perfect circles (radiusX == radiusY)
+- Test ellipses with different radii ratios
+- Test polylines with single arc vertex
+- Test polylines with multiple arc vertices (up to 8)
+- Test mixed vertex types (arc + straight)
+
+Feature 3 - Witness Line Trimming:
+- Test dimensions with nearby source geometry
+- Test dimensions far from sources (fallback to zero)
+- Test positive and negative dimension offsets
+- Test multiple source objects overlapping
+- Test complex geometry (curves, polygons)
+
+Feature 4 - Text Collision Avoidance:
+- Test 2 overlapping dimensions
+- Test 3+ dimensions with multiple overlaps
+- Test dimensions that resolve in 1-2 iterations
+- Test worst-case requiring 8 iterations
+- Test dimensions with no overlaps (should complete quickly)
+
+================================================================================
