@@ -54,6 +54,7 @@ jobs:
           : "${R2_ACCESS_KEY_ID:?Set VECTORWORKS_SDK_R2_ACCESS_KEY_ID}"
           : "${R2_SECRET_ACCESS_KEY:?Set VECTORWORKS_SDK_R2_SECRET_ACCESS_KEY}"
           : "${SDK_SHA256:?Set the version-specific Vectorworks Mac SDK SHA256 secret}"
+          # The private R2 SDK objects are the official Vectorworks Mac SDK ZIPs.
           archive="$RUNNER_TEMP/vectorworks-mac-sdk-${{ matrix.version }}.zip"
           AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
           AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
