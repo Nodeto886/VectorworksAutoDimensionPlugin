@@ -1,0 +1,95 @@
+name: Build Vectorworks Windows plugin
+
+on:
+  push:
+    branches: [main, codex/**]
+    paths:
+      - 'include/**'
+      - 'sdk-projects/**'
+      - 'src/**'
+      - 'scripts/build-release.ps1'
+      - '.github/workflows/build-windows.yml'
+  pull_request:
+    paths:
+      - 'include/**'
+      - 'sdk-projects/**'
+      - 'src/**'
+      - 'scripts/build-release.ps1'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload Windows ZIPs to the configured Cloudflare R2 bucket
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [2025, 2026]
+    env:
+      R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.VECTORWORKS_SDK_R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.VECTORWORKS_SDK_R2_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Vectorworks Windows SDK
+        shell: pwsh
+        env:
+          SDK_SHA256: ${{ matrix.version == 2025 && secrets.VECTORWORKS_WIN_SDK_2025_SHA256 || secrets.VECTORWORKS_WIN_SDK_2026_SHA256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:R2_ENDPOINT)) { throw 'Set CLOUDFLARE_R2_ENDPOINT' }
+          if ([string]::IsNullOrWhiteSpace($env:R2_BUCKET)) { throw 'Set CLOUDFLARE_R2_BUCKET' }
+          if ([string]::IsNullOrWhiteSpace($env:R2_ACCESS_KEY_ID)) { throw 'Set VECTORWORKS_SDK_R2_ACCESS_KEY_ID' }
+          if ([string]::IsNullOrWhiteSpace($env:R2_SECRET_ACCESS_KEY)) { throw 'Set VECTORWORKS_SDK_R2_SECRET_ACCESS_KEY' }
+          if ([string]::IsNullOrWhiteSpace($env:SDK_SHA256)) { throw 'Set the version-specific Vectorworks Windows SDK SHA256 secret' }
+          $archive = Join-Path $env:RUNNER_TEMP "vectorworks-win-sdk-${{ matrix.version }}.zip"
+          $env:AWS_ACCESS_KEY_ID = $env:R2_ACCESS_KEY_ID
+          $env:AWS_SECRET_ACCESS_KEY = $env:R2_SECRET_ACCESS_KEY
+          $env:AWS_DEFAULT_REGION = 'auto'
+          aws s3 cp "s3://$env:R2_BUCKET/sdk/Vectorworks-${{ matrix.version }}-win-SDK.zip" $archive --endpoint-url $env:R2_ENDPOINT
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($actual -ne $env:SDK_SHA256.ToUpperInvariant()) { throw "SDK SHA256 mismatch: $actual" }
+          $sdkStage = Join-Path $env:RUNNER_TEMP "vectorworks-win-sdk-${{ matrix.version }}"
+          Expand-Archive -LiteralPath $archive -DestinationPath $sdkStage -Force
+          $sdkLib = Get-ChildItem -LiteralPath $sdkStage -Directory -Recurse -Filter SDKLib | Select-Object -First 1
+          if ($null -eq $sdkLib) { throw 'SDKLib directory not found in SDK archive' }
+          if (!(Test-Path (Join-Path $sdkLib.FullName 'Include\OnlyWin\NNA_PluginBuild_RELEASE.props'))) { throw 'Windows SDK props missing' }
+          if (!(Test-Path (Join-Path $sdkLib.FullName 'LibWin\Release\VWSDK.lib'))) { throw 'Windows SDK library missing' }
+          if (!(Test-Path (Join-Path $sdkLib.FullName 'ToolsWin\BuildVWR\buildvwr.exe'))) { throw 'BuildVWR missing' }
+          "VECTORWORKS_SDK_ROOT=$($sdkLib.Parent.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build Vectorworks Windows plugin
+        shell: pwsh
+        run: .\scripts\build-release.ps1 -Version ${{ matrix.version }} -SdkRoot "$env:VECTORWORKS_SDK_ROOT" -Package
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vectorworks-windows-${{ matrix.version }}
+          path: dist/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Windows.zip
+          if-no-files-found: error
+
+      - name: Publish Windows ZIP to Cloudflare R2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:AWS_ACCESS_KEY_ID = '${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}'
+          $env:AWS_SECRET_ACCESS_KEY = '${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}'
+          $env:AWS_DEFAULT_REGION = 'auto'
+          if ([string]::IsNullOrWhiteSpace($env:AWS_ACCESS_KEY_ID)) { throw 'Set CLOUDFLARE_R2_ACCESS_KEY_ID' }
+          if ([string]::IsNullOrWhiteSpace($env:AWS_SECRET_ACCESS_KEY)) { throw 'Set CLOUDFLARE_R2_SECRET_ACCESS_KEY' }
+          $archive = "dist/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Windows.zip"
+          aws s3 cp $archive "s3://$env:R2_BUCKET/vectorworks/$(Split-Path $archive -Leaf)" --endpoint-url $env:R2_ENDPOINT --content-type application/zip --cache-control 'public, max-age=0, must-revalidate'

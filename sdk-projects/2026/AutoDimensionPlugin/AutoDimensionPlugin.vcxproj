@@ -4,7 +4,7 @@
     <PreferredToolArchitecture>x64</PreferredToolArchitecture>
   </PropertyGroup>
   <PropertyGroup Label="ToolsetLock">
-    <VCToolsVersion>14.51.36231</VCToolsVersion>
+    <VCToolsVersion></VCToolsVersion>
   </PropertyGroup>
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -20,29 +20,29 @@
     <ProjectGuid>{190589EF-AD32-4874-8C8B-E09DA782DB0F}</ProjectGuid>
     <RootNamespace>AutoDimensionPlugin</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
-    <BranchPath>C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)</BranchPath>
+    <BranchPath>$(VectorworksSDKRoot)</BranchPath>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">v143</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">v143</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings" />
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\Include\OnlyWin\NNA_PluginBuild_RELEASE.props" />
+    <Import Project="$(VectorworksSDKRoot)\SDKLib\Include\OnlyWin\NNA_PluginBuild_RELEASE.props" />
   </ImportGroup>
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\Include\OnlyWin\NNA_PluginBuild_DEBUG.props" />
+    <Import Project="$(VectorworksSDKRoot)\SDKLib\Include\OnlyWin\NNA_PluginBuild_DEBUG.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
@@ -63,7 +63,7 @@
     </Midl>
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>.\Source\Prefix;C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\Include;C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\Include\VWFC;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.\Source\Prefix;$(VectorworksSDKRoot)\SDKLib\Include;$(VectorworksSDKRoot)\SDKLib\Include\VWFC;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;WIN32;_WINDOWS;_USRDLL;_WIN_EXTERNAL_;DEV_BLD;_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <SmallerTypeCheck>false</SmallerTypeCheck>
@@ -86,7 +86,7 @@
       <AdditionalDependencies>VWSDK.lib;USP10.lib;Rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(TargetPath)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
-      <AdditionalLibraryDirectories>C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\LibWin\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(VectorworksSDKRoot)\SDKLib\LibWin\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <IgnoreSpecificDefaultLibraries>libc;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
@@ -102,8 +102,8 @@
 set VWR_INPUT=$(ProjectDir)$(TargetName).vwr
 set VWR_OUTPUT=$(TargetDir)$(TargetName).vwr
 set VWR_MODE=$(Configuration)
-set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\ToolsWin\BuildVWR\7z
-"C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\ToolsWin\BuildVWR\buildvwr.exe"</Command>
+set VWR_7ZCMD=$(VectorworksSDKRoot)\SDKLib\ToolsWin\BuildVWR\7z
+"$(VectorworksSDKRoot)\SDKLib\ToolsWin\BuildVWR\buildvwr.exe"</Command>
       <Message>Creating VWR file.</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -113,7 +113,7 @@ set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDK
     </Midl>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
-      <AdditionalIncludeDirectories>.\Source\Prefix;C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\Include;C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\Include\VWFC;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.\Source\Prefix;$(VectorworksSDKRoot)\SDKLib\Include;$(VectorworksSDKRoot)\SDKLib\Include\VWFC;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;WIN32;_WINDOWS;_USRDLL;_WIN_EXTERNAL_;RELEASE_BLD;_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>false</MinimalRebuild>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
@@ -137,7 +137,7 @@ set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDK
       <AdditionalDependencies>VWSDK.lib;USP10.lib;Rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(TargetPath)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
-      <AdditionalLibraryDirectories>C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\LibWin\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(VectorworksSDKRoot)\SDKLib\LibWin\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <ProgramDatabaseFile>$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
       <SubSystem>Windows</SubSystem>
@@ -154,8 +154,8 @@ set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDK
 set VWR_INPUT=$(ProjectDir)$(TargetName).vwr
 set VWR_OUTPUT=$(TargetDir)$(TargetName).vwr
 set VWR_MODE=$(Configuration)
-set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\ToolsWin\BuildVWR\7z
-"C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\ToolsWin\BuildVWR\buildvwr.exe"</Command>
+set VWR_7ZCMD=$(VectorworksSDKRoot)\SDKLib\ToolsWin\BuildVWR\7z
+"$(VectorworksSDKRoot)\SDKLib\ToolsWin\BuildVWR\buildvwr.exe"</Command>
       <Message>Creating VWR file.</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -174,6 +174,6 @@ set VWR_7ZCMD=C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDK
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
-    <Import Project="C:\Users\keepl\Downloads\VectorworksSDK\2026\SDK\SDKVW(832364)\SDKLib\Include\OnlyWin\NNA_BuildInstrumentation_ALL.targets" />
+    <Import Project="$(VectorworksSDKRoot)\SDKLib\Include\OnlyWin\NNA_BuildInstrumentation_ALL.targets" />
   </ImportGroup>
 </Project>
