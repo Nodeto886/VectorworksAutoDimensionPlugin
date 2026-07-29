@@ -67,6 +67,8 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP/vectorworks-sdk"
           sdk_lib="$(find "$RUNNER_TEMP/vectorworks-sdk" -type d -name SDKLib -print -quit)"
           [[ -n "$sdk_lib" && -d "$sdk_lib/Include" && -d "$sdk_lib/LibMac" ]]
+          chmod +x "$sdk_lib/ToolsMac/BuildVWR/BuildVWR"
+          [[ -x "$sdk_lib/ToolsMac/BuildVWR/BuildVWR" ]]
           echo "SDK_ROOT=$sdk_lib" >> "$GITHUB_ENV"
 
       - name: Build Vectorworks Mac plugin
