@@ -1760,11 +1760,28 @@ bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeB
 {
 	const bool result = VWTool_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
 	TXStringArray annotationImages;
-	for (size_t index = 0; index < 10; ++index) annotationImages.Append(index == 0 ? "KeeplAutoDimTest/Images/KeeplAutoDimTestObjTool.png" : "Vectorworks/Images/ModeViewBar/Line_Button2.png");
+	const std::array<const char*, 10> annotationIconNames = {
+		"ModeAuto.png", "ModeContinuous.png", "ModeLine.png", "ModeManualBlock.png", "ModeIntersection.png",
+		"ModeSelection.png", "ModeCenters.png", "ModeBoundaries.png", "ModeClosedSpace.png", "ModeEnhanced.png"
+	};
+	for (const char* iconName : annotationIconNames) {
+		TXString iconPath = "KeeplAutoDimTest/Images/";
+		iconPath += iconName;
+		annotationImages.Append(iconPath);
+	}
 	pModeBarInitProvider->AddRadioModeGroup(fAnnotationModeGroup, annotationImages);
 
 	TXStringArray editImages;
-	for (size_t index = 0; index < 11; ++index) editImages.Append("Vectorworks/Images/ModeViewBar/Line_Button2.png");
+	const std::array<const char*, 11> editIconNames = {
+		"ModeEditNone.png", "ModeConvert.png", "ModeTrim.png", "ModeAlign.png", "ModeSplitExtend.png",
+		"ModeTextDirection.png", "ModeDimensionPoints.png", "ModeMerge.png", "ModeAvoidText.png",
+		"ModeResetText.png", "ModeResetTextPosition.png"
+	};
+	for (const char* iconName : editIconNames) {
+		TXString iconPath = "KeeplAutoDimTest/Images/";
+		iconPath += iconName;
+		editImages.Append(iconPath);
+	}
 	pModeBarInitProvider->AddRadioModeGroup(fEditModeGroup, editImages);
 
 	VectorWorks::TVWModeBarButtonHelpArray buttonHelp;
