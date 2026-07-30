@@ -9,6 +9,7 @@ on:
       - 'src/**'
       - 'scripts/build-release.ps1'
       - '.github/workflows/build-windows.yml'
+      - '.github/workflows/build-mac.yml'
   pull_request:
     paths:
       - 'include/**'
@@ -16,6 +17,7 @@ on:
       - 'src/**'
       - 'scripts/build-release.ps1'
       - '.github/workflows/build-windows.yml'
+      - '.github/workflows/build-mac.yml'
   workflow_dispatch:
     inputs:
       publish:
