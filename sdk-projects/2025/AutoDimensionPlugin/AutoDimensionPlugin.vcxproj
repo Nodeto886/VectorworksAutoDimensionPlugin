@@ -59,6 +59,7 @@
       <TypeLibraryName>$(IntDir)$(TargetName).tlb</TypeLibraryName>
     </Midl>
     <ClCompile>
+      <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>.\Source\Prefix;$(VectorworksSDKRoot)\SDKLib\Include;$(VectorworksSDKRoot)\SDKLib\Include\VWFC;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;WIN32;_WINDOWS;_USRDLL;_WIN_EXTERNAL_;DEV_BLD;_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -109,6 +110,7 @@ set VWR_7ZCMD=$(VectorworksSDKRoot)\SDKLib\ToolsWin\BuildVWR\7z
       <TypeLibraryName>$(IntDir)$(TargetName).tlb</TypeLibraryName>
     </Midl>
     <ClCompile>
+      <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
       <Optimization>MaxSpeed</Optimization>
       <AdditionalIncludeDirectories>.\Source\Prefix;$(VectorworksSDKRoot)\SDKLib\Include;$(VectorworksSDKRoot)\SDKLib\Include\VWFC;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;WIN32;_WINDOWS;_USRDLL;_WIN_EXTERNAL_;RELEASE_BLD;_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
