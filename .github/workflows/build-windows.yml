@@ -91,7 +91,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish Windows ZIP to Cloudflare R2
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-windows]')) }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
