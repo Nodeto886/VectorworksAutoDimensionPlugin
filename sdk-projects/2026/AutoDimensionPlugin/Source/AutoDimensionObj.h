@@ -50,11 +50,17 @@ namespace AutoDimensionPlugin
 		virtual void	DoModeEvent(size_t modeGroupID, size_t newButtonID, size_t oldButtonID);
 		virtual TToolStatus	GetStatus(const IToolStatusProvider* pStatusProvider);
 		virtual void	HandleComplete();
+		virtual Sint32	OnDefaultEvent(ToolMessage* message);
 
 	private:
-		size_t			fAnnotationModeGroup = 0;
-		size_t			fEditModeGroup = 1;
+		// Mode group IDs live in AutoDimensionObj.cpp as kAnnotationModeGroup /
+		// kEditModeGroup. They are not stored here so they cannot be confused with the
+		// initially selected button that AddRadioModeGroup expects.
 		size_t			fAnnotationMode = 0;
 		size_t			fEditMode = 0;
+		bool			fChainActive = false;
+		VWPoint2D		fChainAnchor;
+		size_t			fChainCreatedCount = 0;
+		std::vector<MCObjectHandle> fEditDimensions;
 	};
 }

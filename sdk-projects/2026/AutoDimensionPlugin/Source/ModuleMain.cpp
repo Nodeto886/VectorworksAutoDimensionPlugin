@@ -8,17 +8,32 @@
 #include "StdAfx.h"
 #include "AutoDimensionObj.h"
 
+#if defined(_DEBUG)
+#include <cstdlib>
 #include <fstream>
+#include <string>
+
+static std::string GetKeeplLoadTracePath(const char* fileName)
+{
+#ifdef _WINDOWS
+	const char* tempPath = std::getenv("TEMP");
+	if (!tempPath || !*tempPath) {
+		tempPath = std::getenv("TMP");
+	}
+	std::string path = (tempPath && *tempPath) ? tempPath : ".";
+	if (!path.empty() && path[path.size() - 1] != '\\' && path[path.size() - 1] != '/') {
+		path += '\\';
+	}
+	path += fileName;
+	return path;
+#else
+	return std::string("/tmp/") + fileName;
+#endif
+}
 
 static void WriteKeeplLoadTrace(const char* message, Sint32 value = -1)
 {
-	const char* tracePath =
-#ifdef _WINDOWS
-		"C:\\Users\\keepl\\Downloads\\VectorworksAutoDimensionPlugin\\vw-load-trace-2026.txt";
-#else
-		"/tmp/vw-load-trace-2026.txt";
-#endif
-	std::ofstream trace(tracePath, std::ios::app);
+	std::ofstream trace(GetKeeplLoadTracePath("vw-load-trace-2026.txt"), std::ios::app);
 	if (trace.is_open()) {
 		trace << message;
 		if (value != -1) {
@@ -27,6 +42,10 @@ static void WriteKeeplLoadTrace(const char* message, Sint32 value = -1)
 		trace << "\n";
 	}
 }
+#define VWAD_LOAD_TRACE(...) WriteKeeplLoadTrace(__VA_ARGS__)
+#else
+#define VWAD_LOAD_TRACE(...) do { } while (false)
+#endif
 
 const char * DefaultPluginVWRIdentifier() { return "KeeplAutoDimTest"; }
 
@@ -35,7 +54,7 @@ const char * DefaultPluginVWRIdentifier() { return "KeeplAutoDimTest"; }
 // provide SDK version for which this plugin was compiled
 extern "C" Sint32 GS_EXTERNAL_ENTRY plugin_module_ver()
 {
-	WriteKeeplLoadTrace("plugin_module_ver", SDK_VERSION);
+	VWAD_LOAD_TRACE("plugin_module_ver", SDK_VERSION);
 	return SDK_VERSION;
 }
 
@@ -45,7 +64,7 @@ extern "C" Sint32 GS_EXTERNAL_ENTRY plugin_module_ver()
 //
 extern "C" Sint32 GS_EXTERNAL_ENTRY plugin_module_main(Sint32 action, void* moduleInfo, const VWIID& iid, IVWUnknown*& inOutInterface, CallBackPtr cbp)
 {
-	WriteKeeplLoadTrace("plugin_module_main action", action);
+	VWAD_LOAD_TRACE("plugin_module_main action", action);
 
 	// initialize VCOM mechanizm
 	::GS_InitializeVCOM( cbp );
@@ -58,12 +77,12 @@ extern "C" Sint32 GS_EXTERNAL_ENTRY plugin_module_main(Sint32 action, void* modu
 //	REGISTER_Extension<TesterModule::CExtMenu>( GROUPID_ExtensionMenu, action, pInfo, ioData, cbp, reply );
 //	REGISTER_Extension<TesterModule::CExtObj>( GROUPID_ExtensionParametric, action, pInfo, ioData, cbp, reply );
 //	REGISTER_Extension<TesterModule::CExtVSFuncs>( GROUPID_ExtensionVSFunctions, action, pInfo, ioData, cbp, reply );
-	WriteKeeplLoadTrace("matches tool iid", iid == AutoDimensionPlugin::CExtAutoDimensionObjDefTool::_GetIID() ? 1 : 0);
+	VWAD_LOAD_TRACE("matches tool iid", iid == AutoDimensionPlugin::CExtAutoDimensionObjDefTool::_GetIID() ? 1 : 0);
 	REGISTER_Extension<AutoDimensionPlugin::CExtAutoDimensionObjDefTool>( GROUPID_ExtensionTool, action, moduleInfo, iid, inOutInterface, cbp, reply );
-	WriteKeeplLoadTrace("after tool reply", reply);
-	WriteKeeplLoadTrace("matches object iid", iid == AutoDimensionPlugin::CExtAutoDimensionObj::_GetIID() ? 1 : 0);
+	VWAD_LOAD_TRACE("after tool reply", reply);
+	VWAD_LOAD_TRACE("matches object iid", iid == AutoDimensionPlugin::CExtAutoDimensionObj::_GetIID() ? 1 : 0);
 	REGISTER_Extension<AutoDimensionPlugin::CExtAutoDimensionObj>( GROUPID_ExtensionParametric, action, moduleInfo, iid, inOutInterface, cbp, reply );
-	WriteKeeplLoadTrace("after object reply", reply);
+	VWAD_LOAD_TRACE("after object reply", reply);
 
 	return reply;
 }

@@ -302,6 +302,8 @@ namespace AutoDimensionPlugin
 				case rBoxNode:
 				case kOvalNode:
 				case kArcNode:
+				case kWallNode:
+				case kSlabNode:
 					CollectPlanBounds(object, collection);
 					break;
 
