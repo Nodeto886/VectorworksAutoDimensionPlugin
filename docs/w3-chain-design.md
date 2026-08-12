@@ -3,6 +3,8 @@
 > 任务性质：**只读研究 + 设计文档**，不修改任何产品代码。
 > 仓库：`C:\Users\keepl\Downloads\VectorworksAutoDimensionPlugin`（Vectorworks 2025/2026 C++ SDK 插件）。
 > 关联文档：`docs/autodim-feature-design.md`（需求 #3 的语义确认与 MVP 推荐）；本文是它的「工具层」子研究，回答**工具怎么做才正确**。
+
+> **实现状态（2026-08-13）**：本文 §3 的 H/V 投影链已落地为 `kAnnotationQuickChain=10`；任意角度链已落地为 `kAnnotationQuickChainAngle=11`（前两点定义 θ，后续点击把上一点与当前点投影到固定 θ 轴，`dimType=1 + dir=θ`，沿用「投影点对与 θ 共线」的安全路径，见 §8.3）。任意角度链的 offset 侧边符号沿用连续/交线模式的 `-offset` 约定，**仍需在 VW 2025/2026 冒烟确认**（若反向对调符号即可）。链式合并为单一链对象（W2）未做，依赖 P2-6 运行时验证。
 > 结论级别：带「(SDK 源码/头文件已确认)」的为本地证据；带「需实测」的为 SDK 头文件看不到、需要运行时验证的项。
 
 ---
