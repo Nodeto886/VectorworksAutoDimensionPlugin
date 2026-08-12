@@ -1495,10 +1495,23 @@ namespace AutoDimensionPlugin
 				if (length <= kGeometryTolerance) break;
 				WorldCoord sourceOffset = 0.0;
 				GetDimensionReal(dimension, ovDimStartOffset, sourceOffset);
-				const WorldPt projectionEnd = (std::abs(dx) >= std::abs(dy))
+				const bool horizontal = std::abs(dx) >= std::abs(dy);
+				const WorldPt projectionEnd = horizontal
 					? WorldPt(end.x, start.y)
 					: WorldPt(start.x, end.y);
-				MCObjectHandle replacement = gSDK->CreateLinearDimension(start, projectionEnd, sourceOffset, 0.0, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho);
+				// The aligned offset is the perpendicular distance to the sloped axis, while
+				// the orthogonal offset is the vertical (horizontal projection) or horizontal
+				// (vertical projection) distance to the H/V axis. Scale by 1/cosθ (or 1/sinθ)
+				// so the dimension line stays at the same world position; the factor is >= 1
+				// and |dx|/|dy| > 0 is guaranteed by the length guard above.
+				const WorldCoord scaleFactor = horizontal ? (length / std::abs(dx)) : (length / std::abs(dy));
+				const WorldCoord convertedOffset = sourceOffset * scaleFactor;
+				MCObjectHandle replacement = gSDK->CreateLinearDimension(start, projectionEnd, convertedOffset, 0.0, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho);
+				if (replacement) {
+					VWAD_RUNTIME_TRACE("edit-convert dimension=" + DescribeObject(dimension)
+						+ " sourceOffset=" + std::to_string(sourceOffset)
+						+ " convertedOffset=" + std::to_string(convertedOffset));
+				}
 				if (replacement) {
 					ViewPlane::ApplyPlanarRef(replacement, plane);
 					const Boolean replacementAdded = CopyDimensionPresentationFrom(dimension, replacement) && gSDK->AddAfterSwapObject(replacement);
