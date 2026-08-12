@@ -61,6 +61,9 @@ namespace AutoDimensionPlugin
 		bool			fChainActive = false;
 		VWPoint2D		fChainAnchor;
 		size_t			fChainCreatedCount = 0;
+		bool			fChainAngleValid = false;
+		Vector2			fChainAngle;   // unit direction of the angle chain axis
+		VWPoint2D		fChainOrigin;  // first anchor; the angle axis passes through it
 		std::vector<MCObjectHandle> fEditDimensions;
 	};
 }

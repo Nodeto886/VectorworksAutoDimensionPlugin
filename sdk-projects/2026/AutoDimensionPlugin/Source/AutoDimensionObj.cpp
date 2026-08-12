@@ -43,6 +43,7 @@ namespace AutoDimensionPlugin
 	static constexpr size_t kAnnotationClosedSpace = 8;
 	static constexpr size_t kAnnotationEnhanced = 9;
 	static constexpr size_t kAnnotationQuickChain = 10;
+	static constexpr size_t kAnnotationQuickChainAngle = 11;
 	static constexpr size_t kEditNone = 0;
 	static constexpr size_t kEditConvert = 1;
 	static constexpr size_t kEditTrim = 2;
@@ -2654,10 +2655,10 @@ bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeB
 	const bool result = VWTool_EventSink::DoSetUp(bRestore, pModeBarInitProvider);
 	fEditDimensions = CollectSelectedDimensions();
 	TXStringArray annotationImages;
-	const std::array<const char*, 11> annotationIconNames = {
+	const std::array<const char*, 12> annotationIconNames = {
 		"ModeAuto.png", "ModeContinuous.png", "ModeLine.png", "ModeManualBlock.png", "ModeIntersection.png",
 		"ModeSelection.png", "ModeCenters.png", "ModeBoundaries.png", "ModeClosedSpace.png", "ModeEnhanced.png",
-		"ModeQuickChain.png"
+		"ModeQuickChain.png", "ModeQuickChainAngle.png"
 	};
 	for (const char* iconName : annotationIconNames) {
 		TXString iconPath = "KeeplAutoDimTest/Images/";
@@ -2694,6 +2695,7 @@ bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeB
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("封闭空间标注", "点击封闭多边形或封闭线进行标注。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("加强标注", "创建角度、半径、直径和弧长标注。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("快速连续标注", "点击首点后，逐点续接生成水平/垂直投影（转角）尺寸；ESC 结束。", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("任意角度链", "前两点确定链方向，后续点击沿该方向投影续接尺寸；ESC 结束。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("创建标注", "创建模式：退出编辑功能，开始创建标注。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("转换标注", "将选中的对齐标注转换为转角（水平/垂直投影）尺寸。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("尺寸线剪齐", "将选中标注的尺寸界线剪齐到对象边界。", VectorWorks::eModeBarButtonType_RadioMode));
@@ -2716,6 +2718,7 @@ void CAutoDimensionObjDefTool_EventSink::DoSetDown(bool bRestore, const IToolMod
 	VWTool_EventSink::DoSetDown(bRestore, pModeBarInitProvider);
 	fChainActive = false;
 	fChainCreatedCount = 0;
+	fChainAngleValid = false;
 	fEditDimensions.clear();
 }
 
@@ -2734,9 +2737,10 @@ void CAutoDimensionObjDefTool_EventSink::DoModeEvent(size_t modeGroupID, size_t 
 			fpModeBarProvider->SetModeGroupValue(kEditModeGroup, static_cast<Sint32>(kEditNone));
 		}
 		fEditMode = kEditNone;
-		if (fAnnotationMode != kAnnotationQuickChain) {
+		if (fAnnotationMode != kAnnotationQuickChain && fAnnotationMode != kAnnotationQuickChainAngle) {
 			fChainActive = false;
 			fChainCreatedCount = 0;
+			fChainAngleValid = false;
 		}
 		VWAD_RUNTIME_TRACE("tool-annotation-mode changed=" + std::to_string(fAnnotationMode));
 	}
@@ -2761,7 +2765,7 @@ TToolStatus CAutoDimensionObjDefTool_EventSink::GetStatus(const IToolStatusProvi
 	else if (fAnnotationMode == kAnnotationManualBlock || fAnnotationMode == kAnnotationIntersection) {
 		fResult = pStatusProvider->GetTwoPointToolStatus();
 	}
-	else if (fAnnotationMode == kAnnotationQuickChain) {
+	else if (fAnnotationMode == kAnnotationQuickChain || fAnnotationMode == kAnnotationQuickChainAngle) {
 		fResult = pStatusProvider->GetOnePointToolStatus();
 	}
 	else {
@@ -2922,6 +2926,82 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		else {
 			AddLinearDimension(fChainAnchor, WorldPt(fChainAnchor.x, click.y), offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "quickchain-v", plane, created);
 		}
+		if (created > 0) {
+			gSDK->EndUndoEvent();
+			++fChainCreatedCount;
+		}
+		ViewPlane::End(plane);
+		fChainAnchor = click;
+		return;
+	}
+	if (fAnnotationMode == kAnnotationQuickChainAngle) {
+		if (this->GetToolPointsCount() < 1) return;
+		const VWPoint2D click = this->GetToolPt2D(0);
+		if (!fChainActive) {
+			fChainOrigin = click;
+			fChainAnchor = click;
+			fChainActive = true;
+			fChainCreatedCount = 0;
+			fChainAngleValid = false;
+			VWAD_RUNTIME_TRACE(std::string("angle-chain anchor=") + FormatPoint(WorldPt(click.x, click.y)));
+			gSDK->AlertInform("任意角度链：已锚定起点，点击下一点确定链方向，ESC 结束。");
+			return;
+		}
+
+		const SAutoDimSettings s = GetAutoDimSettings();
+		WorldPt segmentStart;
+		WorldPt segmentEnd;
+		WorldCoord segmentLength = 0.0;
+		if (!fChainAngleValid) {
+			// Second click fixes the chain axis θ through the anchor and becomes the
+			// first measured point (it lies on the axis by construction).
+			const WorldCoord dx = click.x - fChainAnchor.x;
+			const WorldCoord dy = click.y - fChainAnchor.y;
+			const WorldCoord len = std::hypot(dx, dy);
+			if (len <= kGeometryTolerance) {
+				gSDK->AlertInform("与起点距离过近，无法确定链方向；请拉开距离后点击。");
+				return;
+			}
+			fChainAngle = Vector2(dx / len, dy / len);
+			fChainAngleValid = true;
+			segmentStart = WorldPt(fChainAnchor.x, fChainAnchor.y);
+			segmentEnd = click;
+			segmentLength = len;
+			VWAD_RUNTIME_TRACE(std::string("angle-chain direction=") + std::to_string(fChainAngle.x) + "," + std::to_string(fChainAngle.y));
+		}
+		else {
+			// Project the previous anchor and the click onto the fixed axis and measure
+			// between the ordered projections, so every segment stays collinear.
+			const WorldCoord sPrev = (fChainAnchor.x - fChainOrigin.x) * fChainAngle.x + (fChainAnchor.y - fChainOrigin.y) * fChainAngle.y;
+			const WorldCoord sCur = (click.x - fChainOrigin.x) * fChainAngle.x + (click.y - fChainOrigin.y) * fChainAngle.y;
+			segmentLength = std::abs(sCur - sPrev);
+			if (segmentLength <= kGeometryTolerance) {
+				gSDK->AlertInform("与上一点的投影距离过近，未生成标注。");
+				return;
+			}
+			const WorldCoord axisLow = std::min(sPrev, sCur);
+			const WorldCoord axisHigh = std::max(sPrev, sCur);
+			segmentStart = WorldPt(fChainOrigin.x + axisLow * fChainAngle.x, fChainOrigin.y + axisLow * fChainAngle.y);
+			segmentEnd = WorldPt(fChainOrigin.x + axisHigh * fChainAngle.x, fChainOrigin.y + axisHigh * fChainAngle.y);
+		}
+
+		const WorldCoord pad = 1.0;
+		WorldCube segCube(
+			WorldPt3(std::min(segmentStart.x, segmentEnd.x) - pad, std::min(segmentStart.y, segmentEnd.y) - pad, -pad),
+			WorldPt3(std::max(segmentStart.x, segmentEnd.x) + pad, std::max(segmentStart.y, segmentEnd.y) + pad, pad));
+		ViewPlane::SViewPlane plane = ViewPlane::Begin(segCube);
+		if (EndElevationPlaneWithAlert(plane, "任意角度链仅支持平面/非立面视图，当前为标准立面视图，请切换到平面视图后重试。")) {
+			fChainActive = false;
+			fChainCreatedCount = 0;
+			fChainAngleValid = false;
+			return;
+		}
+		size_t created = 0;
+		gSDK->SetUndoMethod(kUndoSwapObjects);
+		// Negative offset matches the aligned-dimension convention used by the continuous
+		// and virtual-line-intersection modes (same sign/side as those verified paths).
+		const WorldCoord offset = -std::max<WorldCoord>(s.dimOffsetBase, segmentLength * s.dimOffsetRatio);
+		AddLinearDimension(segmentStart, segmentEnd, offset, fChainAngle, kLinearDimensionTypeAligned, "angle-chain", plane, created);
 		if (created > 0) {
 			gSDK->EndUndoEvent();
 			++fChainCreatedCount;
@@ -3124,9 +3204,11 @@ Sint32 CAutoDimensionObjDefTool_EventSink::OnDefaultEvent(ToolMessage* message)
 {
 	if (message && message->fAction == ToolMessage::kAction_OnEscapeKeyWithNoToolPts) {
 		if (fChainActive) {
+			const bool wasAngleChain = fChainAngleValid;
 			fChainActive = false;
 			fChainCreatedCount = 0;
-			gSDK->AlertInform("快速连续标注已结束。");
+			fChainAngleValid = false;
+			gSDK->AlertInform(wasAngleChain ? "任意角度链已结束。" : "快速连续标注已结束。");
 			return kToolSpecialKeyEventHandled;
 		}
 	}
