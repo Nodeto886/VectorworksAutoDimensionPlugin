@@ -10,7 +10,7 @@ $names = @(
     "ModeSelection", "ModeCenters", "ModeBoundaries", "ModeClosedSpace", "ModeEnhanced",
     "ModeEditNone", "ModeConvert", "ModeTrim", "ModeAlign", "ModeSplitExtend",
     "ModeTextDirection", "ModeDimensionPoints", "ModeMerge", "ModeAvoidText", "ModeResetText",
-    "ModeResetTextPosition"
+    "ModeResetTextPosition", "ModeQuickChain"
 )
 
 function Draw-Line($g, $pen, [int]$x1, [int]$y1, [int]$x2, [int]$y2) {
@@ -66,6 +66,7 @@ function Draw-Icon($name, $path, [int]$scale) {
         "ModeAvoidText" { $graphics.DrawRectangle($main, 2, 5, 7, 9); Draw-Arrow $graphics $accent 13 10 23 10; Draw-Line $graphics $accent 13 4 13 16 }
         "ModeResetText" { $graphics.DrawRectangle($main, 2, 5, 7, 9); $graphics.DrawArc($accent, 12, 4, 10, 10, 45, 270); Draw-Line $graphics $accent 13 5 16 5; Draw-Line $graphics $accent 13 5 13 8 }
         "ModeResetTextPosition" { $graphics.DrawRectangle($main, 2, 5, 7, 9); Draw-Line $graphics $accent 14 4 14 16; Draw-Line $graphics $accent 11 7 17 7; Draw-Line $graphics $accent 11 13 17 13; Draw-Arrow $graphics $accent 14 4 12 6; Draw-Arrow $graphics $accent 14 16 12 14 }
+        "ModeQuickChain" { Draw-Arrow $graphics $main 3 12 7 12; Draw-Arrow $graphics $main 15 12 11 12; Draw-Arrow $graphics $accent 15 12 23 12; Draw-Line $graphics $accent 15 6 15 18 }
     }
 
     $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)

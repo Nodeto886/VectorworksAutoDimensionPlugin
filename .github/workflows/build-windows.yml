@@ -92,8 +92,27 @@ jobs:
           path: dist/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Windows.zip
           if-no-files-found: error
 
+  publish:
+    name: Publish Vectorworks Windows plugin
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main' }}
+    runs-on: windows-2022
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [2025, 2026]
+    env:
+      R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vectorworks-windows-${{ matrix.version }}
+          path: dist
+
       - name: Publish Windows ZIP to Cloudflare R2
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-windows]')) }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -103,4 +122,5 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:AWS_ACCESS_KEY_ID)) { throw 'Set CLOUDFLARE_R2_ACCESS_KEY_ID' }
           if ([string]::IsNullOrWhiteSpace($env:AWS_SECRET_ACCESS_KEY)) { throw 'Set CLOUDFLARE_R2_SECRET_ACCESS_KEY' }
           $archive = "dist/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Windows.zip"
+          if (!(Test-Path -LiteralPath $archive -PathType Leaf)) { throw "Build artifact is missing: $archive" }
           aws s3 cp $archive "s3://$env:R2_BUCKET/vectorworks/$(Split-Path $archive -Leaf)" --endpoint-url $env:R2_ENDPOINT --content-type application/zip --cache-control 'public, max-age=0, must-revalidate'

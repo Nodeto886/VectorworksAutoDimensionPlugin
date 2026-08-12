@@ -1,18 +1,26 @@
 param(
-    [string]$VectorworksRoot = "C:\Program Files\Vectorworks 2025"
+    [ValidateSet("2025", "2026")]
+    [string]$Version = "2025",
+
+    [string]$VectorworksRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $pluginBaseName = "KeeplAutoDimTest"
-$sourceRoot = Join-Path $repoRoot "dist\2025"
+$sourceRoot = Join-Path $repoRoot "dist\$Version"
 $sourceVlb = Join-Path $sourceRoot "$pluginBaseName.vlb"
 $sourceVwr = Join-Path $sourceRoot "$pluginBaseName.vwr"
+if ([string]::IsNullOrWhiteSpace($VectorworksRoot)) {
+    $VectorworksRoot = "C:\Program Files\Vectorworks $Version"
+}
 $appPlugRoot = Join-Path $VectorworksRoot "Plug-Ins"
-$userPlugRoot = Join-Path $env:APPDATA "Nemetschek\Vectorworks\2025\Plug-ins"
-$quarantineRoot = Join-Path $repoRoot ("install-quarantine\2025-user-" + (Get-Date -Format "yyyyMMddHHmmss"))
-$cacheBackupRoot = Join-Path $repoRoot ("plugin-cache-backup\2025-user-" + (Get-Date -Format "yyyyMMddHHmmss"))
+$userPlugRoot = Join-Path $env:APPDATA "Nemetschek\Vectorworks\$Version\Plug-ins"
+$quarantineId = Get-Date -Format "yyyyMMddHHmmss"
+$userQuarantineRoot = Join-Path $repoRoot ("install-quarantine\$Version-user-" + $quarantineId)
+$appQuarantineRoot = Join-Path $repoRoot ("install-quarantine\$Version-programfiles-" + $quarantineId)
+$cacheBackupRoot = Join-Path $repoRoot ("plugin-cache-backup\$Version-user-" + (Get-Date -Format "yyyyMMddHHmmss"))
 
 if (!(Test-Path -LiteralPath $sourceVlb -PathType Leaf)) {
     throw "Missing plugin binary: $sourceVlb"
@@ -26,7 +34,7 @@ if (!(Test-Path -LiteralPath $appPlugRoot -PathType Container)) {
     throw "Vectorworks Plug-Ins folder not found: $appPlugRoot"
 }
 
-New-Item -ItemType Directory -Force -Path $quarantineRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $userQuarantineRoot, $appQuarantineRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $cacheBackupRoot | Out-Null
 
 if (Test-Path -LiteralPath $userPlugRoot -PathType Container) {
@@ -42,7 +50,7 @@ if (Test-Path -LiteralPath $userPlugRoot -PathType Container) {
     )) {
         $path = Join-Path $userPlugRoot $name
         if (Test-Path -LiteralPath $path) {
-            Move-Item -LiteralPath $path -Destination (Join-Path $quarantineRoot $name) -Force
+            Move-Item -LiteralPath $path -Destination (Join-Path $userQuarantineRoot $name)
         }
     }
 
@@ -57,13 +65,14 @@ if (Test-Path -LiteralPath $userPlugRoot -PathType Container) {
 foreach ($name in @("AutoDimensionPlugin.vlb", "AutoDimensionPlugin.vwr")) {
     $legacyAppPath = Join-Path $appPlugRoot $name
     if (Test-Path -LiteralPath $legacyAppPath -PathType Leaf) {
-        Move-Item -LiteralPath $legacyAppPath -Destination (Join-Path $quarantineRoot $name) -Force
+        Move-Item -LiteralPath $legacyAppPath -Destination (Join-Path $appQuarantineRoot $name)
     }
 }
 
 Copy-Item -LiteralPath $sourceVlb -Destination (Join-Path $appPlugRoot "$pluginBaseName.vlb") -Force
 Copy-Item -LiteralPath $sourceVwr -Destination (Join-Path $appPlugRoot "$pluginBaseName.vwr") -Force
 
-Write-Host "Installed AutoDimensionPlugin 2025 to: $appPlugRoot"
-Write-Host "User duplicate files moved to: $quarantineRoot"
+Write-Host "Installed $pluginBaseName $Version to: $appPlugRoot"
+Write-Host "User duplicate files moved to: $userQuarantineRoot"
+Write-Host "Program Files legacy files moved to: $appQuarantineRoot"
 Write-Host "User plugin cache moved to: $cacheBackupRoot"

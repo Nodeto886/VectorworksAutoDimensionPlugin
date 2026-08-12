@@ -86,8 +86,24 @@ jobs:
           path: dist/mac/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Mac.zip
           if-no-files-found: error
 
+  publish:
+    name: Publish Vectorworks Mac plugin
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main' }}
+    runs-on: macos-14
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [2025, 2026]
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vectorworks-mac-${{ matrix.version }}
+          path: dist/mac
+
       - name: Configure AWS CLI for Cloudflare R2
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-mac]')) }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -97,7 +113,6 @@ jobs:
           : "${AWS_SECRET_ACCESS_KEY:?Set CLOUDFLARE_R2_SECRET_ACCESS_KEY}"
 
       - name: Publish Mac ZIPs to Cloudflare R2
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-mac]')) }}
         env:
           R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
@@ -109,6 +124,7 @@ jobs:
           : "${R2_ENDPOINT:?Set CLOUDFLARE_R2_ENDPOINT}"
           : "${R2_BUCKET:?Set CLOUDFLARE_R2_BUCKET}"
           archive="dist/mac/Keepl-Auto-Dimension-Vectorworks-${{ matrix.version }}-Mac.zip"
+          [[ -f "$archive" ]] || { echo "Build artifact is missing: $archive" >&2; exit 1; }
           aws s3 cp "$archive" "s3://$R2_BUCKET/vectorworks/$(basename "$archive")" \
               --endpoint-url "$R2_ENDPOINT" \
               --content-type application/zip \

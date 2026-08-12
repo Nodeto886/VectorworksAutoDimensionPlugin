@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PluginBaseName = "KeeplAutoDimTest"
+$LegacyPluginBaseName = "AutoDimensionPlugin"
 
 function Install-AutoDimensionPlugin {
     param(
@@ -37,10 +38,21 @@ function Install-AutoDimensionPlugin {
     $target = Join-Path $env:APPDATA "Nemetschek\Vectorworks\$TargetVersion\Plug-ins"
     New-Item -ItemType Directory -Force -Path $target | Out-Null
 
+    $legacyFiles = @("$LegacyPluginBaseName.vlb", "$LegacyPluginBaseName.vwr")
+    $existingLegacyFiles = @($legacyFiles | Where-Object { Test-Path -LiteralPath (Join-Path $target $_) -PathType Leaf })
+    if ($existingLegacyFiles.Count -gt 0) {
+        $quarantine = Join-Path (Split-Path -Parent $target) ("KeeplAutoDimTest-quarantine\" + (Get-Date -Format "yyyyMMddHHmmss") + "-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Force -Path $quarantine | Out-Null
+        foreach ($legacyFile in $existingLegacyFiles) {
+            Move-Item -LiteralPath (Join-Path $target $legacyFile) -Destination (Join-Path $quarantine $legacyFile)
+        }
+        Write-Host "Legacy plugin files moved to: $quarantine"
+    }
+
     Copy-Item -LiteralPath $sourceVlb -Destination (Join-Path $target "$PluginBaseName.vlb") -Force
     Copy-Item -LiteralPath $sourceVwr -Destination (Join-Path $target "$PluginBaseName.vwr") -Force
 
-    Write-Host "Installed AutoDimensionPlugin $TargetVersion to: $target"
+    Write-Host "Installed $PluginBaseName $TargetVersion to: $target"
 }
 
 if ($All) {

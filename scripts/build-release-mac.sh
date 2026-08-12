@@ -6,6 +6,7 @@ sdk_root="$repo_root/SDKLib"
 output_root="$repo_root/dist/mac"
 versions=(2025 2026)
 package_output=1
+version_override=0
 
 usage() {
   cat <<'EOF'
@@ -19,14 +20,33 @@ EOF
 while (($#)); do
   case "$1" in
     -v|--version)
-      versions=("$2")
+      if (($# < 2)); then
+        echo "Missing value for $1" >&2
+        usage >&2
+        exit 2
+      fi
+      if (( !version_override )); then
+        versions=()
+        version_override=1
+      fi
+      versions+=("$2")
       shift 2
       ;;
     -s|--sdk-root)
+      if (($# < 2)); then
+        echo "Missing value for $1" >&2
+        usage >&2
+        exit 2
+      fi
       sdk_root="$(cd "$2" && pwd)"
       shift 2
       ;;
     -o|--output)
+      if (($# < 2)); then
+        echo "Missing value for $1" >&2
+        usage >&2
+        exit 2
+      fi
       mkdir -p "$2"
       output_root="$(cd "$2" && pwd)"
       shift 2
@@ -115,6 +135,19 @@ for version in "${versions[@]}"; do
     rm -f "$archive"
     ditto -c -k --sequesterRsrc --keepParent \
       "$output_root/$version/$plugin_name.vwlibrary" "$archive"
+    archive_check="$build_root/ArchiveCheck"
+    rm -rf "$archive_check"
+    mkdir -p "$archive_check"
+    ditto -x -k "$archive" "$archive_check"
+    [[ -d "$archive_check/$plugin_name.vwlibrary" ]] || {
+      echo "Invalid Mac package contents: missing $plugin_name.vwlibrary" >&2
+      exit 1
+    }
+    top_level_count="$(find "$archive_check" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+    [[ "$top_level_count" == "1" ]] || {
+      echo "Invalid Mac package contents: expected one top-level entry, found $top_level_count" >&2
+      exit 1
+    }
     echo "Packaged Vectorworks $version Mac plugin: $archive"
   fi
 done
