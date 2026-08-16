@@ -10,9 +10,13 @@ from __future__ import annotations
 # IMPORTANT: the structural assertions below only hold for the *post-fix*
 # source tree (after the 8 bug fixes + the pre-existing WIP that removed the
 # `{ ovDimStartPt, ... }` variable-block write at ApplyDimensionVariableTransaction
-# are committed). On the pre-fix HEAD this test intentionally FAILS.
-# Wire it into .github/workflows/test.yml (a "Run dual-version gate" step) only
-# AFTER those source changes are committed, otherwise CI will be red.
+# are committed). That work landed in commit 248b3cf, so this gate now PASSES
+# on current HEAD.
+#
+# It is wired into CI as the standalone `source-gate` job in
+# .github/workflows/test.yml (independent of the SDK-dependent `test` job, which
+# cannot build in CI without the Windows VW SDK). The job runs this script with
+# the exact command shown below.
 #
 # Run manually today with:
 #   python3 tests/test_sdk_source_invariants.py \

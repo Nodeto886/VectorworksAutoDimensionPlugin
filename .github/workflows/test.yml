@@ -43,3 +43,18 @@ jobs:
 
       - name: Run numerical regression tests
         run: python3 tools/test_autodim_geometry.py
+
+  # Dual-version (2025/2026) source consistency gate.
+  # Pure stdlib text check — needs NO Windows VW SDK, so it runs green
+  # independently of the SDK-dependent `test` job above (which cannot build
+  # in CI without LibWin). Enforces: 2025/2026 sources stay byte-identical
+  # except version-stamped trace filenames, and neither writes dimension
+  # geometry through the non-public ovDimStartPt/ovDimEndPt selectors.
+  source-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run dual-version source invariant gate
+        run: python3 tests/test_sdk_source_invariants.py --source-2025 sdk-projects/2025/AutoDimensionPlugin/Source/AutoDimensionObj.cpp --source-2026 sdk-projects/2026/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
