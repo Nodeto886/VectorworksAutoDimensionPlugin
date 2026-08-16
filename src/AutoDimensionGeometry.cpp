@@ -1,6 +1,6 @@
 #include "vwad/AutoDimensionGeometry.h"
 
-#include <array>
+#include <cmath>
 
 namespace vwad {
 namespace {
@@ -19,6 +19,13 @@ const std::vector<DimensionTypeInfo> kSupportedTypes = {
 
 bool Bounds3::isValid() const
 {
+    const bool finite =
+        std::isfinite(minX) && std::isfinite(minY) && std::isfinite(minZ) &&
+        std::isfinite(maxX) && std::isfinite(maxY) && std::isfinite(maxZ);
+    if (!finite || minX > maxX || minY > maxY || minZ > maxZ) {
+        return false;
+    }
+
     return maxX > minX || maxY > minY || maxZ > minZ;
 }
 
@@ -66,21 +73,21 @@ std::vector<DimensionDefinition> buildDimensionDefinitions(
     definition.placement = placement;
     definition.offsetIndex = 0;
 
-    if (name == kOverallWidth) {
+    if (name == kOverallWidth && bounds.maxX > bounds.minX) {
         definition.start = {bounds.minX, bounds.minY, bounds.minZ};
         definition.end = {bounds.maxX, bounds.minY, bounds.minZ};
         definition.placement = DimensionPlacement::Bottom;
         return {definition};
     }
 
-    if (name == kOverallHeight) {
+    if (name == kOverallHeight && bounds.maxY > bounds.minY) {
         definition.start = {bounds.maxX, bounds.minY, bounds.minZ};
         definition.end = {bounds.maxX, bounds.maxY, bounds.minZ};
         definition.placement = DimensionPlacement::Right;
         return {definition};
     }
 
-    if (name == kOverallDepth) {
+    if (name == kOverallDepth && bounds.maxZ > bounds.minZ) {
         definition.start = {bounds.minX, bounds.maxY, bounds.minZ};
         definition.end = {bounds.minX, bounds.maxY, bounds.maxZ};
         definition.placement = DimensionPlacement::Top;

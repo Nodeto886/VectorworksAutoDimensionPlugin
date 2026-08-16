@@ -4,7 +4,10 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <unordered_set>
 #include <vector>
+
+#include "AutoDimensionAlgorithms.h"
 
 namespace AutoDimensionPlugin
 {
@@ -30,6 +33,9 @@ namespace AutoDimensionPlugin
 			std::vector<WorldPt> points;
 			std::vector<SMeasuredSegment> segments;
 			std::vector<SMeasuredSegment> detailSegments;
+			vwad::algo::SpatialPointIndex pointIndex{ kTolerance };
+			std::unordered_set<std::uint64_t> segmentKeys;
+			std::unordered_set<std::uint64_t> detailSegmentKeys;
 			std::vector<VWFC::Math::VWTransformMatrix> transforms;
 			std::vector<MCObjectHandle> activeContainers;
 			size_t visitedObjectCount = 0;
@@ -43,6 +49,7 @@ namespace AutoDimensionPlugin
 			SMeasuredSegment referenceSegment;
 			double foldedAngleDegrees = 0.0;
 			double supportingLength = 0.0;
+			double confidence = 0.0;
 			bool valid = false;
 		};
 
@@ -68,13 +75,6 @@ namespace AutoDimensionPlugin
 			bool valid = false;
 		};
 
-		static bool ArePointsEqual(const WorldPt& a, const WorldPt& b)
-		{
-			const double dx = a.x - b.x;
-			const double dy = a.y - b.y;
-			return dx * dx + dy * dy <= kTolerance * kTolerance;
-		}
-
 		static WorldPt TransformPoint(const WorldPt& point, const SCollection& collection)
 		{
 			VWFC::Math::VWPoint3D transformed(point.x, point.y, 0.0);
@@ -93,37 +93,27 @@ namespace AutoDimensionPlugin
 			return WorldPt(transformed.x, transformed.y);
 		}
 
-		static void AddWorldPoint(const WorldPt& point, SCollection& collection)
+		static size_t AddWorldPoint(const WorldPt& point, SCollection& collection)
 		{
-			for (const WorldPt& existing : collection.points) {
-				if (ArePointsEqual(existing, point)) {
-					return;
-				}
-			}
-
+			const size_t existing = collection.pointIndex.find({point.x, point.y});
+			if (existing != std::numeric_limits<size_t>::max()) return existing;
 			if (collection.points.size() >= kMaximumPoints) {
 				collection.truncated = true;
-				return;
+				return std::numeric_limits<size_t>::max();
 			}
+			const size_t previousCount = collection.pointIndex.points().size();
+			const size_t index = collection.pointIndex.insertOrFind({point.x, point.y});
+			if (collection.pointIndex.points().size() == previousCount) return index;
 			collection.points.push_back(point);
-		}
-
-		static bool ContainsSegment(const std::vector<SMeasuredSegment>& segments, const SMeasuredSegment& candidate)
-		{
-			for (const SMeasuredSegment& existing : segments) {
-				const bool sameDirection = ArePointsEqual(existing.start, candidate.start) && ArePointsEqual(existing.end, candidate.end);
-				const bool reverseDirection = ArePointsEqual(existing.start, candidate.end) && ArePointsEqual(existing.end, candidate.start);
-				if (sameDirection || reverseDirection) {
-					return true;
-				}
-			}
-			return false;
+			return index;
 		}
 
 		static void AddWorldSegment(const WorldPt& start, const WorldPt& end, bool detail, SCollection& collection)
 		{
-			AddWorldPoint(start, collection);
-			AddWorldPoint(end, collection);
+			const size_t startIndex = AddWorldPoint(start, collection);
+			const size_t endIndex = AddWorldPoint(end, collection);
+			if (startIndex == std::numeric_limits<size_t>::max() ||
+				endIndex == std::numeric_limits<size_t>::max() || startIndex == endIndex) return;
 
 			SMeasuredSegment segment;
 			segment.start = start;
@@ -133,7 +123,10 @@ namespace AutoDimensionPlugin
 				return;
 			}
 
-			if (!ContainsSegment(collection.segments, segment)) {
+			const std::uint64_t low = static_cast<std::uint64_t>(std::min(startIndex, endIndex));
+			const std::uint64_t high = static_cast<std::uint64_t>(std::max(startIndex, endIndex));
+			const std::uint64_t key = (low << 32) | high;
+			if (collection.segmentKeys.insert(key).second) {
 				if (collection.segments.size() < kMaximumSegments) {
 					collection.segments.push_back(segment);
 				}
@@ -142,7 +135,7 @@ namespace AutoDimensionPlugin
 				}
 			}
 
-			if (detail && !ContainsSegment(collection.detailSegments, segment)) {
+			if (detail && collection.detailSegmentKeys.insert(key).second) {
 				if (collection.detailSegments.size() < kMaximumDetailSegments) {
 					collection.detailSegments.push_back(segment);
 				}
@@ -152,9 +145,33 @@ namespace AutoDimensionPlugin
 			}
 		}
 
+		static void AddWorldDetailSegment(const WorldPt& start, const WorldPt& end, SCollection& collection)
+		{
+			const size_t startIndex = AddWorldPoint(start, collection);
+			const size_t endIndex = AddWorldPoint(end, collection);
+			if (startIndex == std::numeric_limits<size_t>::max() ||
+				endIndex == std::numeric_limits<size_t>::max() || startIndex == endIndex) return;
+			SMeasuredSegment segment;
+			segment.start = start;
+			segment.end = end;
+			segment.length = std::hypot(end.x - start.x, end.y - start.y);
+			if (segment.length <= kTolerance) return;
+			const std::uint64_t low = static_cast<std::uint64_t>(std::min(startIndex, endIndex));
+			const std::uint64_t high = static_cast<std::uint64_t>(std::max(startIndex, endIndex));
+			const std::uint64_t key = (low << 32) | high;
+			if (!collection.detailSegmentKeys.insert(key).second) return;
+			if (collection.detailSegments.size() < kMaximumDetailSegments) collection.detailSegments.push_back(segment);
+			else collection.truncated = true;
+		}
+
 		static void AddLocalSegment(const WorldPt& start, const WorldPt& end, bool detail, SCollection& collection)
 		{
 			AddWorldSegment(TransformPoint(start, collection), TransformPoint(end, collection), detail, collection);
+		}
+
+		static void AddLocalDetailSegment(const WorldPt& start, const WorldPt& end, SCollection& collection)
+		{
+			AddWorldDetailSegment(TransformPoint(start, collection), TransformPoint(end, collection), collection);
 		}
 
 		struct SPolyEdgeContext
@@ -173,8 +190,6 @@ namespace AutoDimensionPlugin
 			CallBackPtr callback,
 			void* environment)
 		{
-			(void) control;
-			(void) radius;
 			(void) callback;
 			SPolyEdgeContext* context = static_cast<SPolyEdgeContext*>(environment);
 			if (!context || !context->collection) {
@@ -183,9 +198,63 @@ namespace AutoDimensionPlugin
 
 			AddWorldPoint(TransformPoint(start, *context->collection), *context->collection);
 			AddWorldPoint(TransformPoint(end, *context->collection), *context->collection);
-			if (visible != 0 && type == vtCorner) {
+			if (visible == 0) return;
+			if (type == vtCorner) {
 				AddLocalSegment(start, end, context->collectDetail, *context->collection);
+				return;
 			}
+
+			// ForEachPolyEdge supplies one control point for Bezier edges and a
+			// signed radius for circular edges. Tessellate curved geometry for
+			// bounds/intersections, while continuous annotation receives one
+			// endpoint chord instead of dozens of tiny dimensions.
+			if ((type == vtArc || type == vtRadius) && std::abs(radius) > kTolerance) {
+				const WorldCoord dx = end.x - start.x;
+				const WorldCoord dy = end.y - start.y;
+				const WorldCoord chord = std::hypot(dx, dy);
+				const WorldCoord absRadius = std::abs(radius);
+				if (chord > kTolerance && absRadius + kTolerance >= chord * 0.5) {
+					const WorldCoord midX = (start.x + end.x) * 0.5;
+					const WorldCoord midY = (start.y + end.y) * 0.5;
+					const WorldCoord centerDistance = std::sqrt(std::max<WorldCoord>(0.0, absRadius * absRadius - chord * chord * 0.25));
+					const WorldCoord perpX = -dy / chord;
+					const WorldCoord perpY = dx / chord;
+					const WorldPt centers[2] = {
+						WorldPt(midX + perpX * centerDistance, midY + perpY * centerDistance),
+						WorldPt(midX - perpX * centerDistance, midY - perpY * centerDistance),
+					};
+					const double firstDistance = std::hypot(centers[0].x - control.x, centers[0].y - control.y);
+					const double secondDistance = std::hypot(centers[1].x - control.x, centers[1].y - control.y);
+					const WorldPt center = firstDistance <= secondDistance ? centers[0] : centers[1];
+					double startAngle = std::atan2(start.y - center.y, start.x - center.x);
+					double endAngle = std::atan2(end.y - center.y, end.x - center.x);
+					double sweep = endAngle - startAngle;
+					while (sweep < 0.0) sweep += 2.0 * kPi;
+					const size_t steps = std::clamp<size_t>(static_cast<size_t>(std::ceil(std::abs(sweep) / (kPi / 18.0))), 2, 36);
+					WorldPt previous = start;
+					for (size_t index = 1; index <= steps; ++index) {
+						const double angle = startAngle + sweep * static_cast<double>(index) / static_cast<double>(steps);
+						const WorldPt current = index == steps ? end : WorldPt(center.x + absRadius * std::cos(angle), center.y + absRadius * std::sin(angle));
+						AddLocalSegment(previous, current, false, *context->collection);
+						previous = current;
+					}
+					if (context->collectDetail) AddLocalDetailSegment(start, end, *context->collection);
+					return;
+				}
+			}
+
+			const size_t steps = 16;
+			WorldPt previous = start;
+			for (size_t index = 1; index <= steps; ++index) {
+				const double t = static_cast<double>(index) / static_cast<double>(steps);
+				const double oneMinusT = 1.0 - t;
+				const WorldPt current = index == steps ? end : WorldPt(
+					oneMinusT * oneMinusT * start.x + 2.0 * oneMinusT * t * control.x + t * t * end.x,
+					oneMinusT * oneMinusT * start.y + 2.0 * oneMinusT * t * control.y + t * t * end.y);
+				AddLocalSegment(previous, current, false, *context->collection);
+				previous = current;
+			}
+			if (context->collectDetail) AddLocalDetailSegment(start, end, *context->collection);
 		}
 
 		static void CollectPlanBounds(MCObjectHandle object, SCollection& collection)
@@ -289,7 +358,7 @@ namespace AutoDimensionPlugin
 				{
 					SPolyEdgeContext context;
 					context.collection = &collection;
-					context.collectDetail = collection.sourceIsOpenPath && depth == 0;
+					context.collectDetail = depth == 0;
 					gSDK->ForEachPolyEdge(object, CollectPolyEdge, &context);
 					break;
 				}
@@ -372,54 +441,25 @@ namespace AutoDimensionPlugin
 
 		static bool FindDominantAxis(const SCollection& collection, SDominantAxis& outAxis)
 		{
-			if (collection.segments.empty()) {
-				return false;
-			}
-
-			double maximumLength = 0.0;
+			std::vector<vwad::algo::Segment2> segments;
+			segments.reserve(collection.segments.size());
 			for (const SMeasuredSegment& segment : collection.segments) {
-				maximumLength = std::max(maximumLength, segment.length);
+				segments.push_back({
+					{segment.start.x, segment.start.y},
+					{segment.end.x, segment.end.y},
+				});
 			}
-			if (maximumLength <= kTolerance) {
-				return false;
-			}
-
-			static constexpr double kBinSizeDegrees = 5.0;
-			std::array<double, 10> binLengths = {};
-			const double minimumSupportingLength = maximumLength * 0.05;
-			for (const SMeasuredSegment& segment : collection.segments) {
-				if (segment.length < minimumSupportingLength) {
-					continue;
-				}
-				const double foldedDegrees = FoldedAxisAngle(segment) * 180.0 / kPi;
-				const size_t bin = std::min<size_t>(9, static_cast<size_t>(foldedDegrees / kBinSizeDegrees));
-				binLengths[bin] += segment.length;
-			}
-
-			const size_t winningBin = static_cast<size_t>(
-				std::distance(binLengths.begin(), std::max_element(binLengths.begin(), binLengths.end())));
-			const SMeasuredSegment* reference = nullptr;
-			for (const SMeasuredSegment& segment : collection.segments) {
-				const double foldedDegrees = FoldedAxisAngle(segment) * 180.0 / kPi;
-				const size_t bin = std::min<size_t>(9, static_cast<size_t>(foldedDegrees / kBinSizeDegrees));
-				if (bin == winningBin && (!reference || segment.length > reference->length)) {
-					reference = &segment;
-				}
-			}
-			if (!reference) {
-				return false;
-			}
-
-			double dx = reference->end.x - reference->start.x;
-			double dy = reference->end.y - reference->start.y;
-			if (dx < 0.0 || (std::abs(dx) <= kTolerance && dy < 0.0)) {
-				dx = -dx;
-				dy = -dy;
-			}
-			outAxis.direction = WorldPt(dx / reference->length, dy / reference->length);
-			outAxis.referenceSegment = *reference;
-			outAxis.foldedAngleDegrees = FoldedAxisAngle(*reference) * 180.0 / kPi;
-			outAxis.supportingLength = binLengths[winningBin];
+			const vwad::algo::DominantAxis axis = vwad::algo::findDominantAxis(segments);
+			if (!axis.valid) return false;
+			outAxis.direction = WorldPt(axis.direction.x, axis.direction.y);
+			outAxis.referenceSegment.start = WorldPt(axis.reference.start.x, axis.reference.start.y);
+			outAxis.referenceSegment.end = WorldPt(axis.reference.end.x, axis.reference.end.y);
+			outAxis.referenceSegment.length = std::hypot(
+				axis.reference.end.x - axis.reference.start.x,
+				axis.reference.end.y - axis.reference.start.y);
+			outAxis.foldedAngleDegrees = axis.foldedAngleDegrees;
+			outAxis.supportingLength = axis.supportingLength;
+			outAxis.confidence = axis.confidence;
 			outAxis.valid = true;
 			return true;
 		}
@@ -447,39 +487,45 @@ namespace AutoDimensionPlugin
 			return outBounds.valid;
 		}
 
-		static bool CalculateOrientedBounds(const SCollection& collection, const SDominantAxis& axis, SOrientedBounds& outBounds)
+		static bool CalculateOrientedBounds(const SCollection& collection, SDominantAxis& axis, SOrientedBounds& outBounds)
 		{
 			if (!axis.valid || collection.points.empty()) {
 				return false;
 			}
-
-			const WorldPt normal(-axis.direction.y, axis.direction.x);
-			double minimumU = std::numeric_limits<double>::max();
-			double maximumU = std::numeric_limits<double>::lowest();
-			double minimumV = std::numeric_limits<double>::max();
-			double maximumV = std::numeric_limits<double>::lowest();
+			std::vector<vwad::algo::Point2> points;
+			points.reserve(collection.points.size());
 			for (const WorldPt& point : collection.points) {
-				const double u = point.x * axis.direction.x + point.y * axis.direction.y;
-				const double v = point.x * normal.x + point.y * normal.y;
-				minimumU = std::min(minimumU, u);
-				maximumU = std::max(maximumU, u);
-				minimumV = std::min(minimumV, v);
-				maximumV = std::max(maximumV, v);
+				points.push_back({point.x, point.y});
 			}
-
-			outBounds.width = maximumU - minimumU;
-			outBounds.height = maximumV - minimumV;
-			outBounds.widthStart = WorldPt(
-				axis.direction.x * minimumU + normal.x * minimumV,
-				axis.direction.y * minimumU + normal.y * minimumV);
-			outBounds.widthEnd = WorldPt(
-				axis.direction.x * maximumU + normal.x * minimumV,
-				axis.direction.y * maximumU + normal.y * minimumV);
-			outBounds.heightStart = outBounds.widthEnd;
-			outBounds.heightEnd = WorldPt(
-				axis.direction.x * maximumU + normal.x * maximumV,
-				axis.direction.y * maximumU + normal.y * maximumV);
-			outBounds.valid = outBounds.width > kTolerance || outBounds.height > kTolerance;
+			vwad::algo::OrientedBounds bounds = vwad::algo::minimumAreaBounds(points);
+			if (!bounds.valid) return false;
+			// Keep the width axis aligned with the statistically dominant family. The
+			// minimum-area rectangle may report either perpendicular edge first.
+			const double alongWidth = std::abs(bounds.axis.x * axis.direction.x + bounds.axis.y * axis.direction.y);
+			const double alongHeight = std::abs(bounds.normal.x * axis.direction.x + bounds.normal.y * axis.direction.y);
+			if (alongHeight > alongWidth) {
+				std::swap(bounds.width, bounds.height);
+				std::swap(bounds.widthStart, bounds.heightStart);
+				std::swap(bounds.widthEnd, bounds.heightEnd);
+				bounds.axis = bounds.normal;
+				bounds.normal = vwad::algo::Point2(-bounds.axis.y, bounds.axis.x);
+			}
+			if (bounds.axis.x < -kTolerance || (std::abs(bounds.axis.x) <= kTolerance && bounds.axis.y < 0.0)) {
+				bounds.axis = bounds.axis * -1.0;
+			}
+			axis.direction = WorldPt(bounds.axis.x, bounds.axis.y);
+			outBounds.width = bounds.width;
+			outBounds.height = bounds.height;
+			outBounds.widthStart = WorldPt(bounds.widthStart.x, bounds.widthStart.y);
+			outBounds.widthEnd = WorldPt(bounds.widthEnd.x, bounds.widthEnd.y);
+			outBounds.heightStart = WorldPt(bounds.heightStart.x, bounds.heightStart.y);
+			outBounds.heightEnd = WorldPt(bounds.heightEnd.x, bounds.heightEnd.y);
+			axis.referenceSegment.start = outBounds.widthStart;
+			axis.referenceSegment.end = outBounds.widthEnd;
+			axis.referenceSegment.length = outBounds.width;
+			const double foldedAngle = std::atan2(std::abs(bounds.axis.y), std::abs(bounds.axis.x));
+			axis.foldedAngleDegrees = std::min(foldedAngle, std::abs(kPi * 0.5 - foldedAngle)) * 180.0 / kPi;
+			outBounds.valid = true;
 			return outBounds.valid;
 		}
 	}

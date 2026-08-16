@@ -62,10 +62,15 @@ if (Test-Path -LiteralPath $userPlugRoot -PathType Container) {
     }
 }
 
-foreach ($name in @("AutoDimensionPlugin.vlb", "AutoDimensionPlugin.vwr")) {
-    $legacyAppPath = Join-Path $appPlugRoot $name
-    if (Test-Path -LiteralPath $legacyAppPath -PathType Leaf) {
-        Move-Item -LiteralPath $legacyAppPath -Destination (Join-Path $appQuarantineRoot $name)
+foreach ($name in @(
+    "AutoDimensionPlugin.vlb",
+    "AutoDimensionPlugin.vwr",
+    "$pluginBaseName.vlb",
+    "$pluginBaseName.vwr"
+)) {
+    $existingAppPath = Join-Path $appPlugRoot $name
+    if (Test-Path -LiteralPath $existingAppPath -PathType Leaf) {
+        Move-Item -LiteralPath $existingAppPath -Destination (Join-Path $appQuarantineRoot $name)
     }
 }
 

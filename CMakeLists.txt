@@ -15,6 +15,42 @@ target_include_directories(vwad_geometry
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(vwad_geometry_tests
+        tests/AutoDimensionGeometryTests.cpp
+    )
+
+    add_executable(vwad_algorithm_tests
+        tests/AutoDimensionAlgorithmsTests.cpp
+    )
+
+    target_link_libraries(vwad_geometry_tests
+        PRIVATE
+            vwad_geometry
+    )
+
+    target_link_libraries(vwad_algorithm_tests
+        PRIVATE
+            vwad_geometry
+    )
+
+    add_test(NAME vwad_geometry_tests COMMAND vwad_geometry_tests)
+    add_test(NAME vwad_algorithm_tests COMMAND vwad_algorithm_tests)
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME vwad_sdk_source_invariants
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sdk_source_invariants.py
+                --source-2025 ${CMAKE_CURRENT_SOURCE_DIR}/sdk-projects/2025/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
+                --source-2026 ${CMAKE_CURRENT_SOURCE_DIR}/sdk-projects/2026/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
+        )
+    endif()
+endif()
+
 option(VWAD_BUILD_VECTORWORKS_ADAPTER "Build the Vectorworks SDK adapter" OFF)
 set(VECTORWORKS_SDK_ROOT "" CACHE PATH "Path to the Vectorworks SDK root")
 

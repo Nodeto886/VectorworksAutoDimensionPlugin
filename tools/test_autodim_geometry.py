@@ -2,21 +2,22 @@
 # -*- coding: utf-8 -*-
 """Numerical verification of the AutoDimensionPlugin "virtual line intersection" geometry.
 
-The production logic is compiled into C++ and cannot be unit-tested directly:
+The production logic is compiled into the Vectorworks plug-in and cannot be
+unit-tested without the licensed SDK and host runtime:
     sdk-projects/2025/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
 This file is a pure-stdlib Python 3 replica of the exact same math (symbol by
-symbol) so the formulas can be exercised numerically. Every replica carries a
-comment citing the corresponding C++ line numbers.
+symbol) so the formulas can be exercised numerically.
 
 Replicated blocks:
-  * BuildLineMeasurement                            AutoDimensionObj.cpp:160-175
-  * CreateVirtualLineIntersectionDimensions         AutoDimensionObj.cpp:641-714
-      - segment/virtual-line intersection math      AutoDimensionObj.cpp:670-679
-      - duplicate rejection (1e-4)                  AutoDimensionObj.cpp:680-685
-      - insufficient-intersections bailout          AutoDimensionObj.cpp:689-692
-      - projection sort                             AutoDimensionObj.cpp:694-698
-      - pairwise aligned dimensions                 AutoDimensionObj.cpp:704-706
-  * kEditConvert H/V projection selection           AutoDimensionObj.cpp:989-996
+  * BuildLineMeasurement
+  * CreateVirtualLineIntersectionDimensions
+      - segment/virtual-line intersection math
+      - scale-aware parallel rejection
+      - relative duplicate rejection
+      - insufficient-intersections bailout
+      - projection sort
+      - pairwise aligned dimensions
+  * kEditConvert H/V projection selection
 
 Run with:  python tools/test_autodim_geometry.py
 Exits non-zero if any assertion fails. Safe to re-run any number of times.
@@ -26,14 +27,14 @@ import math
 import sys
 
 # --- constants (mirror AutoDimensionObj.cpp) ---------------------------------
-K_GEOMETRY_TOLERANCE = 1e-6   # cpp: static constexpr double kGeometryTolerance = 1e-6; (AutoDimensionObj.cpp:97)
-DEDUP_DISTANCE = 1e-4         # cpp: std::hypot(existing - intersection) <= 1e-4       (AutoDimensionObj.cpp:682)
+K_GEOMETRY_TOLERANCE = 1e-6
+DEDUP_BASE_DISTANCE = 1e-4
 
 
 # --- replica of the C++ math -------------------------------------------------
 
 def build_virtual_line(first, second):
-    """Replica of BuildLineMeasurement (AutoDimensionObj.cpp:160-175).
+    """Replica of BuildLineMeasurement.
 
     Returns (dx, dy, length) or None when the line is degenerate (length <= 1e-6),
     matching the C++ false return that makes the caller bail with 0 dimensions
@@ -58,7 +59,7 @@ def in_parameter_range(t, u):
 
 
 def segment_intersection(first, v, seg_start, seg_end):
-    """One candidate edge vs the virtual line (AutoDimensionObj.cpp:670-679).
+    """One candidate edge vs the virtual line.
 
     Virtual line: P = first + t*V, t in [0,1].
     Edge:         S = seg_start + u*Sd, u in [0,1], Sd = seg_end - seg_start.
@@ -68,8 +69,11 @@ def segment_intersection(first, v, seg_start, seg_end):
     vx, vy = v
     sd_x = seg_end[0] - seg_start[0]            # cpp:670
     sd_y = seg_end[1] - seg_start[1]            # cpp:671
-    det = sd_x * vy - vx * sd_y                 # cpp:672  (Sd.x*V.y - V.x*Sd.y)
-    if abs(det) <= K_GEOMETRY_TOLERANCE:        # cpp:673  parallel / collinear / degenerate
+    det = sd_x * vy - vx * sd_y
+    virtual_length = math.hypot(vx, vy)
+    segment_length = math.hypot(sd_x, sd_y)
+    parallel_tolerance = K_GEOMETRY_TOLERANCE * virtual_length * segment_length
+    if abs(det) <= parallel_tolerance:           # scale-independent parallel / collinear / degenerate
         return None
     qx = seg_start[0] - first[0]                # cpp:674  q = seg.start - first
     qy = seg_start[1] - first[1]                # cpp:675
@@ -81,10 +85,11 @@ def segment_intersection(first, v, seg_start, seg_end):
     return (t, u, point)
 
 
-def is_duplicate_of_any(point, existing):
-    """Duplicate test, identical to AutoDimensionObj.cpp:680-684."""
+def is_duplicate_of_any(point, existing, virtual_length, base_distance=DEDUP_BASE_DISTANCE):
+    """Relative duplicate test used by CreateVirtualLineIntersectionDimensions."""
+    dedup_distance = max(base_distance, virtual_length * 1e-6)
     for existing_point in existing:
-        if math.hypot(existing_point[0] - point[0], existing_point[1] - point[1]) <= DEDUP_DISTANCE:
+        if math.hypot(existing_point[0] - point[0], existing_point[1] - point[1]) <= dedup_distance:
             return True
     return False
 
@@ -99,14 +104,14 @@ def collect_intersections(first, second, segments):
     virtual = build_virtual_line(first, second)
     if virtual is None:
         return []                                   # cpp:644-647
-    vx, vy, _length = virtual
+    vx, vy, length = virtual
     intersections = []
     for seg_start, seg_end in segments:
         hit = segment_intersection(first, (vx, vy), seg_start, seg_end)
         if hit is None:
             continue
         _t, _u, point = hit
-        if is_duplicate_of_any(point, intersections):
+        if is_duplicate_of_any(point, intersections, length):
             continue                                # cpp:684
         intersections.append(point)                 # cpp:685
     if len(intersections) < 2:
@@ -118,12 +123,12 @@ def collect_intersections(first, second, segments):
 
 
 def pairwise_dimensions(intersections):
-    """Consecutive pairs used to create aligned dimensions (cpp:704-706)."""
+    """Consecutive pairs used to create aligned dimensions."""
     return [(intersections[i - 1], intersections[i]) for i in range(1, len(intersections))]
 
 
 def convert_projection_end(start, end):
-    """kEditConvert H/V projection end (AutoDimensionObj.cpp:989-996)."""
+    """kEditConvert H/V projection end."""
     dx = end[0] - start[0]                          # cpp:989
     dy = end[1] - start[1]                          # cpp:990
     if abs(dx) >= abs(dy):                          # cpp:994
@@ -299,11 +304,34 @@ def test_dedup_same_vertex_multiple_edges():
 
 @test_case
 def test_dedup_distance_threshold():
-    # duplicate rejection uses <= 1e-4 (cpp:682)
+    # The configured base threshold applies to ordinary-sized virtual lines.
     existing = [(5.0, 0.0)]
-    assert is_duplicate_of_any((5.0, 0.0), existing) is True
-    assert is_duplicate_of_any((5.0 + 0.5e-4, 0.0), existing) is True   # 5e-5 <= 1e-4
-    assert is_duplicate_of_any((5.0 + 1.5e-4, 0.0), existing) is False  # 1.5e-4 > 1e-4
+    assert is_duplicate_of_any((5.0, 0.0), existing, 10.0) is True
+    assert is_duplicate_of_any((5.0 + 0.5e-4, 0.0), existing, 10.0) is True
+    assert is_duplicate_of_any((5.0 + 1.5e-4, 0.0), existing, 10.0) is False
+
+
+@test_case
+def test_dedup_threshold_scales_with_virtual_line():
+    # A 1,000,000-unit virtual line uses a 1-unit threshold, preventing almost
+    # coincident intersections from becoming tiny dimension fragments.
+    existing = [(100.0, 0.0)]
+    assert is_duplicate_of_any((100.5, 0.0), existing, 1_000_000.0) is True
+    assert is_duplicate_of_any((101.5, 0.0), existing, 1_000_000.0) is False
+
+
+@test_case
+def test_small_perpendicular_segments_are_not_parallel():
+    # With the former absolute det <= 1e-6 check, det=1e-8 was rejected even
+    # though the two 1e-4 segments cross at a right angle.
+    hit = segment_intersection(
+        (0.0, 0.0), (1e-4, 0.0),
+        (5e-5, -5e-5), (5e-5, 5e-5),
+    )
+    assert hit is not None, "small perpendicular segments must intersect"
+    t, u, point = hit
+    assert approx(t, 0.5) and approx(u, 0.5)
+    assert pt_approx(point, (5e-5, 0.0))
 
 
 @test_case

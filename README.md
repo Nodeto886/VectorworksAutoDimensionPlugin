@@ -27,6 +27,7 @@
 - 立面视图的横向范围优先用遍历得到的二维几何（平面轴不含 Z 分量，所以收紧横向不会影响高度），Z 范围只能来自 `GetObjectCube`。旋转符号和灯具的包围盒本身就偏大，这类对象的 Z 高度会跟着偏大。
 - 立面视图下中心点模式用投影后的中心点计算最近邻，符号和参数对象仍以插入点为中心。
 - 参数对象仍保留官方 Auto-dimension 回调，用于验证 Graphic Legend 对参数化对象的支持；普通对象的主流程是直接创建尺寸。
+- 算法核心 V2 已接入：尺度感知容差、四角度圆统计主方向、凸包旋转包围盒、路径拓扑排序、区间车道、圆/椭圆/圆弧解析交线、正交偏好中心生成树、加权代表边选择和两阶段文字布局。详细设计见 [docs/algorithm-core-v2.md](docs/algorithm-core-v2.md)。
 - 标注工具模式栏现提供自动识别、连续标注、线对象、符号定位、交线标注、选择对象、中心点、块边界、封闭空间和增强标注、快速连续标注、任意角度链模式；增强模式对圆弧生成原生半径、直径和弧长尺寸。
 - 编辑模式栏现提供转换、剪齐、对齐、分割/延伸、文字方向、标注点、合并、文字避让、重置文字和重置文字位置操作；这些操作只处理选中的原生尺寸对象。
 - 详细完成状态和剩余任务见 [TODO.md](TODO.md)。符号插入点定位、尺寸线剪齐和基于碰撞检测的文字避让（选中源图形时同时避让源图形）已经完成代码与构建验证；仍需在 Vectorworks 2025/2026 中完成完整交互回归测试。
@@ -80,6 +81,19 @@
 ```powershell
 .\scripts\build-release.ps1 -Package
 ```
+
+## 自动化测试
+
+独立几何层使用 CTest，交线与转换算法另有纯 Python 数值回归：
+
+```powershell
+cmake -S . -B build/test -DBUILD_TESTING=ON
+cmake --build build/test --config Release
+ctest --test-dir build/test -C Release --output-on-failure
+python tools/test_autodim_geometry.py
+```
+
+这些测试会在 GitHub Actions 中独立运行，不需要 Vectorworks SDK。完整插件仍需使用上面的双版本 Release 构建验证。
 
 ### Windows 本机构建
 
@@ -147,6 +161,7 @@ GitHub Actions 使用 `macos-14`，需要在 SDK ZIP 中保留完整的 `SDKLib/
 - `sdk-projects/2026/AutoDimensionPlugin`: Vectorworks 2026 SDK 插件工程。
 - `src/AutoDimensionGeometry.cpp`: 脱离 SDK 的尺寸定义计算原型。
 - `include/vwad/AutoDimensionGeometry.h`: 脱离 SDK 的几何/尺寸数据结构。
+- `include/vwad/AutoDimensionAlgorithms.h`: V2 无 SDK 算法核心；包含稳健几何、方向/包围盒、拓扑链、解析求交、车道、中心图、布局和集合覆盖。
 - `include/vwad/SDKComplexGeometry.h`: 复杂对象的二维几何遍历与主方向计算。
 - `include/vwad/SDKViewPlane.h`: 按当前视图选择测量平面，立面视图下的工作平面与投影计算。
 - `sdk/EventSinkIntegrationExample.cpp`: 官方 Auto-dimension 回调接入示例。

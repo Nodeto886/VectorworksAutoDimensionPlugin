@@ -1,16 +1,15 @@
 #include "StdAfx.h"
 
 #include "AutoDimensionObj.h"
+#include "../../../../include/vwad/AutoDimensionAlgorithms.h"
 #include "../../../../include/vwad/SDKComplexGeometry.h"
 #include "../../../../include/vwad/SDKViewPlane.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#if defined(_DEBUG)
 #include <cstdlib>
 #include <fstream>
-#endif
 #include <limits>
 #include <locale>
 #include <sstream>
@@ -396,6 +395,20 @@ namespace AutoDimensionPlugin
 	#define VWAD_RUNTIME_TRACE(message) do { } while (false)
 	#endif
 
+	// Alignment diagnostics stay available in Release builds because dimension
+	// object-variable behavior differs between host versions and cannot be covered
+	// by the SDK-free unit tests. The file contains geometry/status only.
+	static void WriteAlignmentTrace(const std::string& message)
+	{
+		const char* tempPath = std::getenv("TEMP");
+		if (!tempPath || !*tempPath) tempPath = std::getenv("TMP");
+		std::string path = (tempPath && *tempPath) ? tempPath : ".";
+		if (!path.empty() && path.back() != '\\' && path.back() != '/') path += '\\';
+		path += "vw-autodim-align-2026.txt";
+		std::ofstream trace(path, std::ios::app);
+		if (trace.is_open()) trace << message << '\n';
+	}
+
 	static const char* GetDimensionTraceName(const TXString& dimensionID)
 	{
 		if (dimensionID == kOverallWidth) return "OverallWidth";
@@ -409,9 +422,12 @@ namespace AutoDimensionPlugin
 
 	static bool IsSupportedSource(MCObjectHandle object)
 	{
-		return object &&
-			gSDK->GetObjectTypeN(object) != dimHeaderNode &&
-			!VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj");
+		if (!object || VWParametricObj::IsParametricObject(object, "KeeplAutoDimTestObj")) return false;
+		const short type = gSDK->GetObjectTypeN(object);
+		// These are graphic objects but have no measurable boundary/edge geometry
+		// for this tool. Reject them before selection/intersection collection.
+		return type != dimHeaderNode && type != kTextNode && type != kLocusNode &&
+			type != kLocus3DNode && type != kWorksheetNode && type != kViewportNode;
 	}
 
 	static bool IsClosedSpaceSource(MCObjectHandle object)
@@ -598,18 +614,56 @@ namespace AutoDimensionPlugin
 		gSDK->GetArcInfoN(object, startAngle, sweepAngle, outCenter, radiusX, radiusY);
 		if (std::abs(radiusX - radiusY) > kGeometryTolerance || std::abs(radiusX) <= kGeometryTolerance) return false;
 
-		const double startRadians = startAngle * kPi / 180.0;
-		const double endRadians = (startAngle + sweepAngle) * kPi / 180.0;
+		TransformMatrix entityMatrix;
+		gSDK->GetEntityMatrix(object, entityMatrix);
+		const VWFC::Math::VWTransformMatrix objectMatrix(entityMatrix);
+		const VWFC::Math::VWPoint3D u = objectMatrix.GetUVector();
+		const double rotation = std::hypot(u.x, u.y) > kGeometryTolerance ? std::atan2(u.y, u.x) : 0.0;
+		const double startRadians = startAngle * kPi / 180.0 + rotation;
+		const double endRadians = (startAngle + sweepAngle) * kPi / 180.0 + rotation;
 		outStart = WorldPt(outCenter.x + radiusX * std::cos(startRadians), outCenter.y + radiusY * std::sin(startRadians));
 		outEnd = WorldPt(outCenter.x + radiusX * std::cos(endRadians), outCenter.y + radiusY * std::sin(endRadians));
 		outClockwise = sweepAngle < 0.0;
 		return true;
 	}
 
-	static bool GetDimensionPoint(MCObjectHandle object, short selector, WorldPt& outPoint)
+	static bool GetDimensionEndpoints(MCObjectHandle object, WorldPt& outStart, WorldPt& outEnd)
 	{
-		TVariableBlock value;
-		return object && gSDK->GetObjectVariable(object, selector, value) && value.GetWorldPt(outPoint);
+		// Never propagate uninitialized coordinates. The caller relies on a valid
+		// reading to decide whether an edit may proceed.
+		outStart = WorldPt(0.0, 0.0);
+		outEnd = WorldPt(0.0, 0.0);
+		if (!object || gSDK->GetObjectTypeN(object) != dimHeaderNode) return false;
+		// ovDimStartPt / ovDimEndPt are not part of the public SDK contract; different
+		// host builds may return success with degenerate coordinates or drop the call
+		// entirely. Treat a missing value OR a degenerate reading as a hard failure of
+		// the primary path, then fall back to the public API.
+		WorldPt primaryStart;
+		WorldPt primaryEnd;
+		TVariableBlock startValue;
+		TVariableBlock endValue;
+		if (gSDK->GetObjectVariable(object, ovDimStartPt, startValue) &&
+			gSDK->GetObjectVariable(object, ovDimEndPt, endValue) &&
+			startValue.GetWorldPt(primaryStart) && endValue.GetWorldPt(primaryEnd) &&
+			std::hypot(primaryEnd.x - primaryStart.x, primaryEnd.y - primaryStart.y) > kGeometryTolerance) {
+			outStart = primaryStart;
+			outEnd = primaryEnd;
+			return true;
+		}
+		// Public fallback. Honour its return status and only accept a non-degenerate
+		// result; a rejected or degenerate read must not be trusted as a valid
+		// endpoint pair (that is the most common cause of a silent changedCount == 0).
+		WorldPt fallbackStart;
+		WorldPt fallbackEnd;
+		// GetEndPoints is declared void in the SDK: it does not report success, so the
+		// only safe validation is a non-degenerate reading.
+		gSDK->GetEndPoints(object, fallbackStart, fallbackEnd);
+		if (std::hypot(fallbackEnd.x - fallbackStart.x, fallbackEnd.y - fallbackStart.y) > kGeometryTolerance) {
+			outStart = fallbackStart;
+			outEnd = fallbackEnd;
+			return true;
+		}
+		return false;
 	}
 
 	static bool GetDimensionReal(MCObjectHandle object, short selector, double& outValue)
@@ -667,6 +721,47 @@ namespace AutoDimensionPlugin
 		TVariableBlock value;
 	};
 
+	static bool VariableBlocksEquivalent(const TVariableBlock& first, const TVariableBlock& second)
+	{
+		if (first.GetType() != second.GetType()) return false;
+		switch (first.GetType()) {
+			case t_Boolean:
+			{
+				bool a = false, b = false;
+				return first.GetBoolean(a) && second.GetBoolean(b) && a == b;
+			}
+			case t_Sint16:
+			{
+				Sint16 a = 0, b = 0;
+				return first.GetSint16(a) && second.GetSint16(b) && a == b;
+			}
+			case t_Uint8:
+			{
+				Uint8 a = 0, b = 0;
+				return first.GetUint8(a) && second.GetUint8(b) && a == b;
+			}
+			case t_Real64:
+			{
+				Real64 a = 0.0, b = 0.0;
+				if (!first.GetReal64(a) || !second.GetReal64(b)) return false;
+				return std::abs(a - b) <= std::max<Real64>(kGeometryTolerance, std::max(std::abs(a), std::abs(b)) * 1e-9);
+			}
+			case t_WorldPt:
+			{
+				WorldPt a, b;
+				return first.GetWorldPt(a) && second.GetWorldPt(b) &&
+					std::hypot(a.x - b.x, a.y - b.y) <= kGeometryTolerance;
+			}
+			case t_TXString:
+			{
+				TXString a, b;
+				return first.GetTXString(a) && second.GetTXString(b) && a == b;
+			}
+			default:
+				return false;
+		}
+	}
+
 	// Undo registration is best effort: AddBothSwapObject only records an undo
 	// primitive, so losing it must not block the edit itself.
 	static void RegisterDimensionForUndo(MCObjectHandle dimension, std::vector<MCObjectHandle>& ioRegistered)
@@ -684,13 +779,18 @@ namespace AutoDimensionPlugin
 		if (!dimension || changes.empty() || gSDK->GetObjectTypeN(dimension) != dimHeaderNode) return false;
 		std::vector<TVariableBlock> originalValues(changes.size());
 		std::vector<bool> restorable(changes.size(), false);
+		std::vector<size_t> changedIndices;
 		for (size_t index = 0; index < changes.size(); ++index) {
 			restorable[index] = gSDK->GetObjectVariable(dimension, changes[index].selector, originalValues[index]);
+			if (!restorable[index] || !VariableBlocksEquivalent(originalValues[index], changes[index].value)) changedIndices.push_back(index);
 		}
+		if (changedIndices.empty()) return false;
 		RegisterDimensionForUndo(dimension, ioUndoRegistered);
-		for (size_t index = 0; index < changes.size(); ++index) {
+		for (size_t changedPosition = 0; changedPosition < changedIndices.size(); ++changedPosition) {
+			const size_t index = changedIndices[changedPosition];
 			if (gSDK->SetObjectVariable(dimension, changes[index].selector, changes[index].value)) continue;
-			for (size_t restoreIndex = 0; restoreIndex < index; ++restoreIndex) {
+			for (size_t restorePosition = 0; restorePosition < changedPosition; ++restorePosition) {
+				const size_t restoreIndex = changedIndices[restorePosition];
 				if (restorable[restoreIndex]) gSDK->SetObjectVariable(dimension, changes[restoreIndex].selector, originalValues[restoreIndex]);
 			}
 			gSDK->ResetObject(dimension);
@@ -710,9 +810,7 @@ namespace AutoDimensionPlugin
 		if (!source || !target) return false;
 		// Preserve public presentation state only. Geometry class is established by
 		// CreateLinearDimension/CreateChainDimension and must not be overwritten.
-		const std::array<short, 17> selectors = {
-			ovDimStartOffset,
-			ovDimStartOffsetInCurrUnits,
+		const std::array<short, 15> selectors = {
 			ovDimWitnessOverride,
 			ovDimCustStartWitOffset,
 			ovDimCustEndWitOffset,
@@ -740,20 +838,6 @@ namespace AutoDimensionPlugin
 		VWAD_RUNTIME_TRACE("dimension-presentation copied=" + std::to_string(copiedCount)
 			+ "/" + std::to_string(selectors.size()));
 		return true;
-	}
-
-	static bool SwapDimensionEndpointsAndWitnessOffsets(MCObjectHandle dimension, const WorldPt& start, const WorldPt& end, std::vector<MCObjectHandle>& ioUndoRegistered)
-	{
-		double startWitnessOffset = 0.0;
-		double endWitnessOffset = 0.0;
-		if (!GetDimensionReal(dimension, ovDimCustStartWitOffset, startWitnessOffset) ||
-			!GetDimensionReal(dimension, ovDimCustEndWitOffset, endWitnessOffset)) return false;
-		return ApplyDimensionVariableTransaction(dimension, {
-			{ ovDimStartPt, TVariableBlock(end) },
-			{ ovDimEndPt, TVariableBlock(start) },
-			{ ovDimCustStartWitOffset, TVariableBlock(static_cast<Real64>(endWitnessOffset)) },
-			{ ovDimCustEndWitOffset, TVariableBlock(static_cast<Real64>(startWitnessOffset)) },
-		}, ioUndoRegistered);
 	}
 
 	static size_t CreateEnhancedDimensionsForSource(MCObjectHandle sourceObject, const ViewPlane::SViewPlane& plane)
@@ -790,28 +874,51 @@ namespace AutoDimensionPlugin
 			WorldCoord radiusX = 0.0;
 			WorldCoord radiusY = 0.0;
 			gSDK->GetArcInfoN(sourceObject, startAngle, sweepAngle, center, radiusX, radiusY);
+			WorldPt axisX(1.0, 0.0);
+			WorldPt axisY(0.0, 1.0);
+			WorldRectVerts ellipseBounds;
+			if (gSDK->GetObjectTopPlanBounds(sourceObject, ellipseBounds) && !ellipseBounds.IsEmpty()) {
+				const WorldPt& topLeft = ellipseBounds.ClockwiseFromTopLeft(0);
+				const WorldPt& topRight = ellipseBounds.ClockwiseFromTopLeft(1);
+				const WorldPt& bottomRight = ellipseBounds.ClockwiseFromTopLeft(2);
+				const WorldPt& bottomLeft = ellipseBounds.ClockwiseFromTopLeft(3);
+				const WorldCoord width = std::hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
+				const WorldCoord height = std::hypot(bottomRight.x - topRight.x, bottomRight.y - topRight.y);
+				if (width > kGeometryTolerance && height > kGeometryTolerance) {
+					axisX = WorldPt((topRight.x - topLeft.x) / width, (topRight.y - topLeft.y) / width);
+					axisY = WorldPt((bottomRight.x - topRight.x) / height, (bottomRight.y - topRight.y) / height);
+					center = WorldPt(
+						(topLeft.x + topRight.x + bottomRight.x + bottomLeft.x) * 0.25,
+						(topLeft.y + topRight.y + bottomRight.y + bottomLeft.y) * 0.25);
+					radiusX = width * 0.5;
+					radiusY = height * 0.5;
+				}
+			}
 
 			if (std::abs(radiusX) > kGeometryTolerance && std::abs(radiusY) > kGeometryTolerance) {
-				const bool isCircle = std::abs(radiusX - radiusY) <= kGeometryTolerance;
+				const WorldCoord circleTolerance = std::max<WorldCoord>(
+					kGeometryTolerance,
+					std::max(std::abs(radiusX), std::abs(radiusY)) * 1e-9);
+				const bool isCircle = std::abs(radiusX - radiusY) <= circleTolerance;
 				const WorldCoord maxRadius = std::max(radiusX, radiusY);
 				const WorldCoord offset = std::max<WorldCoord>(s.dimOffsetBase, maxRadius * 0.25);
 
 				gSDK->SetUndoMethod(kUndoSwapObjects);
 
 				if (isCircle) {
-					const WorldPt endPoint(center.x + radiusX, center.y);
+					const WorldPt endPoint(center.x + axisX.x * radiusX, center.y + axisX.y * radiusX);
 					AddCircularDimension(center, endPoint, offset, true, "oval-radius", plane, createdCount);
 					AddCircularDimension(center, endPoint, offset * 1.7, false, "oval-diameter", plane, createdCount);
 				}
 				else {
 					// For ellipses, create aligned linear dimensions for major and minor axes
-					const WorldPt majorStart(center.x - radiusX, center.y);
-					const WorldPt majorEnd(center.x + radiusX, center.y);
-					const WorldPt minorStart(center.x, center.y - radiusY);
-					const WorldPt minorEnd(center.x, center.y + radiusY);
+					const WorldPt majorStart(center.x - axisX.x * radiusX, center.y - axisX.y * radiusX);
+					const WorldPt majorEnd(center.x + axisX.x * radiusX, center.y + axisX.y * radiusX);
+					const WorldPt minorStart(center.x - axisY.x * radiusY, center.y - axisY.y * radiusY);
+					const WorldPt minorEnd(center.x + axisY.x * radiusY, center.y + axisY.y * radiusY);
 
-					AddLinearDimension(majorStart, majorEnd, offset, Vector2(1.0, 0.0), kLinearDimensionTypeAligned, "ellipse-major-axis", plane, createdCount);
-					AddLinearDimension(minorStart, minorEnd, offset, Vector2(0.0, 1.0), kLinearDimensionTypeAligned, "ellipse-minor-axis", plane, createdCount);
+					AddLinearDimension(majorStart, majorEnd, offset, Vector2(axisX.x, axisX.y), kLinearDimensionTypeAligned, "ellipse-major-axis", plane, createdCount);
+					AddLinearDimension(minorStart, minorEnd, offset, Vector2(axisY.x, axisY.y), kLinearDimensionTypeAligned, "ellipse-minor-axis", plane, createdCount);
 				}
 
 				if (createdCount > 0) gSDK->EndUndoEvent();
@@ -824,6 +931,7 @@ namespace AutoDimensionPlugin
 		if (type == kPolygonNode || type == kPolylineNode) {
 			struct ArcEdgeData {
 				WorldPt start;
+				WorldPt control;
 				WorldPt end;
 				WorldCoord radius;
 				VertexType vType;
@@ -831,9 +939,9 @@ namespace AutoDimensionPlugin
 			std::vector<ArcEdgeData> arcEdges;
 
 			auto edgeCallback = [](const WorldPt& start, const WorldPt& control, const WorldPt& end, WorldCoord radius, VertexType vType, Sint8 visible, CallBackPtr, void* env) {
-				if ((vType == vtArc || vType == vtRadius) && std::abs(radius) > kGeometryTolerance) {
+				if (visible != 0 && (vType == vtArc || vType == vtRadius) && std::abs(radius) > kGeometryTolerance) {
 					auto* edges = static_cast<std::vector<ArcEdgeData>*>(env);
-					edges->push_back({start, end, radius, vType});
+					edges->push_back({start, control, end, radius, vType});
 				}
 			};
 
@@ -862,11 +970,19 @@ namespace AutoDimensionPlugin
 						const WorldCoord halfChord = chordLength * 0.5;
 						const WorldCoord absRadius = std::abs(arc.radius);
 
-						if (absRadius > halfChord) {
-							const WorldCoord centerDist = std::sqrt(absRadius * absRadius - halfChord * halfChord);
-							const WorldCoord sign = (arc.radius > 0.0) ? 1.0 : -1.0;
-							const WorldPt center(midX + perpX * centerDist * sign, midY + perpY * centerDist * sign);
-							const bool clockwise = arc.radius < 0.0;
+						const WorldCoord radiusTolerance = std::max<WorldCoord>(kGeometryTolerance, absRadius * 1e-9);
+						if (absRadius + radiusTolerance >= halfChord) {
+							const WorldCoord centerDist = std::sqrt(std::max<WorldCoord>(
+								0.0,
+								absRadius * absRadius - halfChord * halfChord));
+							const WorldPt centers[2] = {
+								WorldPt(midX + perpX * centerDist, midY + perpY * centerDist),
+								WorldPt(midX - perpX * centerDist, midY - perpY * centerDist),
+							};
+							const WorldCoord firstDistance = std::hypot(centers[0].x - arc.control.x, centers[0].y - arc.control.y);
+							const WorldCoord secondDistance = std::hypot(centers[1].x - arc.control.x, centers[1].y - arc.control.y);
+							const WorldPt center = firstDistance <= secondDistance ? centers[0] : centers[1];
+							const bool clockwise = false; // ForEachPolyEdge normalizes arc edges counterclockwise.
 
 							const WorldCoord offset = baseOffset * (1.0 + static_cast<WorldCoord>(i) * 0.3);
 							AddCircularDimension(center, arc.end, offset, true, "polyline-arc-radius", plane, createdCount);
@@ -897,19 +1013,51 @@ namespace AutoDimensionPlugin
 			ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(source);
 			segments.insert(segments.end(), geometry.detailSegments.begin(), geometry.detailSegments.end());
 		}
-		std::sort(segments.begin(), segments.end(), [](const auto& a, const auto& b) {
-			return std::min(a.start.x, a.end.x) < std::min(b.start.x, b.end.x);
-		});
 		if (segments.empty()) return 0;
+		std::vector<vwad::algo::Segment2> topologySegments;
+		topologySegments.reserve(segments.size());
+		for (const auto& segment : segments) {
+			topologySegments.push_back({
+				{segment.start.x, segment.start.y},
+				{segment.end.x, segment.end.y},
+			});
+		}
+		const auto chains = vwad::algo::orderSegmentChains(topologySegments);
+		std::vector<vwad::algo::Interval> chainIntervals;
+		chainIntervals.reserve(chains.size());
+		for (size_t chainIndex = 0; chainIndex < chains.size(); ++chainIndex) {
+			vwad::algo::Bounds2 bounds;
+			for (const auto& segment : chains[chainIndex]) {
+				bounds.add(segment.start);
+				bounds.add(segment.end);
+			}
+			chainIntervals.push_back({bounds.minX, bounds.maxX, chainIndex});
+		}
+		const std::vector<size_t> chainLanes = vwad::algo::assignIntervalLanes(chainIntervals, s.dimOffsetBase * 0.25);
 
 		size_t createdCount = 0;
 		gSDK->SetUndoMethod(kUndoSwapObjects);
-		for (size_t index = 0; index < segments.size(); ++index) {
-			const auto& segment = segments[index];
-			const double dx = segment.end.x - segment.start.x;
-			const double dy = segment.end.y - segment.start.y;
-			if (segment.length <= kGeometryTolerance) continue;
-			AddLinearDimension(segment.start, segment.end, -std::max<WorldCoord>(s.dimOffsetBase, segment.length * s.dimOffsetRatio), Vector2(dx / segment.length, dy / segment.length), kLinearDimensionTypeAligned, "continuous", plane, createdCount);
+		for (size_t chainIndex = 0; chainIndex < chains.size(); ++chainIndex) {
+			const auto& chain = chains[chainIndex];
+			const WorldCoord sharedOffset = -std::max<WorldCoord>(
+				s.dimOffsetBase,
+				vwad::algo::geometryScale(chain) * s.dimOffsetRatio) *
+				(1.0 + static_cast<WorldCoord>(chainLanes[chainIndex]) * 0.35);
+			for (const auto& segment : chain) {
+				const double dx = segment.end.x - segment.start.x;
+				const double dy = segment.end.y - segment.start.y;
+				const double segmentLength = std::hypot(dx, dy);
+				if (segmentLength <= kGeometryTolerance) continue;
+				AddLinearDimension(
+					WorldPt(segment.start.x, segment.start.y),
+					WorldPt(segment.end.x, segment.end.y),
+					sharedOffset,
+					Vector2(dx / segmentLength, dy / segmentLength),
+					kLinearDimensionTypeAligned,
+					"continuous",
+					plane,
+					createdCount);
+			}
 		}
 		if (createdCount > 0) gSDK->EndUndoEvent();
 		return createdCount;
@@ -942,26 +1090,81 @@ namespace AutoDimensionPlugin
 		}
 
 		std::vector<WorldPt> intersections;
+		const double dedupTolerance = std::max(s.intersectionDedupTolerance, virtualLine.length * 1e-6);
+		vwad::algo::SpatialPointIndex intersectionIndex(dedupTolerance);
+		const auto appendIntersection = [&](const WorldPt& intersection) {
+			const size_t before = intersectionIndex.points().size();
+			intersectionIndex.insertOrFind({intersection.x, intersection.y});
+			if (intersectionIndex.points().size() == before) return;
+			intersections.push_back(intersection);
+		};
+		const vwad::algo::Segment2 query = {
+			{firstPoint.x, firstPoint.y},
+			{secondPoint.x, secondPoint.y},
+		};
 		for (MCObjectHandle source : candidates) {
+			const short sourceType = gSDK->GetObjectTypeN(source);
+			if (sourceType == kArcNode || sourceType == kOvalNode) {
+				double startAngleDegrees = 0.0;
+				double sweepAngleDegrees = 0.0;
+				WorldPt center;
+				WorldCoord radiusX = 0.0;
+				WorldCoord radiusY = 0.0;
+				gSDK->GetArcInfoN(source, startAngleDegrees, sweepAngleDegrees, center, radiusX, radiusY);
+				double ellipseRotation = 0.0;
+				if (sourceType == kOvalNode) {
+					WorldRectVerts ellipseBounds;
+					if (gSDK->GetObjectTopPlanBounds(source, ellipseBounds) && !ellipseBounds.IsEmpty()) {
+						const WorldPt& topLeft = ellipseBounds.ClockwiseFromTopLeft(0);
+						const WorldPt& topRight = ellipseBounds.ClockwiseFromTopLeft(1);
+						const WorldPt& bottomRight = ellipseBounds.ClockwiseFromTopLeft(2);
+						const WorldPt& bottomLeft = ellipseBounds.ClockwiseFromTopLeft(3);
+						const WorldCoord ux = topRight.x - topLeft.x;
+						const WorldCoord uy = topRight.y - topLeft.y;
+						const WorldCoord vx = bottomRight.x - topRight.x;
+						const WorldCoord vy = bottomRight.y - topRight.y;
+						const WorldCoord width = std::hypot(ux, uy);
+						const WorldCoord height = std::hypot(vx, vy);
+						if (width > kGeometryTolerance && height > kGeometryTolerance) {
+							center = WorldPt(
+								(topLeft.x + topRight.x + bottomRight.x + bottomLeft.x) * 0.25,
+								(topLeft.y + topRight.y + bottomRight.y + bottomLeft.y) * 0.25);
+							radiusX = width * 0.5;
+							radiusY = height * 0.5;
+							ellipseRotation = std::atan2(uy, ux);
+						}
+					}
+				}
+				else {
+					TransformMatrix entityMatrix;
+					gSDK->GetEntityMatrix(source, entityMatrix);
+					const VWFC::Math::VWTransformMatrix objectMatrix(entityMatrix);
+					const VWFC::Math::VWPoint3D u = objectMatrix.GetUVector();
+					if (std::hypot(u.x, u.y) > kGeometryTolerance) ellipseRotation = std::atan2(u.y, u.x);
+				}
+				const double startAngle = sourceType == kOvalNode ? 0.0 : startAngleDegrees * kPi / 180.0;
+				const double sweepAngle = sourceType == kOvalNode ? 2.0 * kPi : sweepAngleDegrees * kPi / 180.0;
+				const auto hits = vwad::algo::segmentEllipseIntersections(
+					query,
+					{center.x, center.y},
+					radiusX,
+					radiusY,
+					ellipseRotation,
+					startAngle,
+					sweepAngle);
+				for (const auto& hit : hits) appendIntersection(WorldPt(hit.second.x, hit.second.y));
+				continue;
+			}
 			ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(source);
 			for (const ComplexGeometry::SMeasuredSegment& segment : geometry.segments) {
-				const double segmentDx = segment.end.x - segment.start.x;
-				const double segmentDy = segment.end.y - segment.start.y;
-				const double det = segmentDx * virtualLine.dy - virtualLine.dx * segmentDy;
-				if (std::abs(det) <= kGeometryTolerance) continue;
-				const double qx = segment.start.x - firstPoint.x;
-				const double qy = segment.start.y - firstPoint.y;
-				const double t = (segmentDx * qy - qx * segmentDy) / det;
-				const double u = (virtualLine.dx * qy - qx * virtualLine.dy) / det;
-				if (t < -kGeometryTolerance || t > 1.0 + kGeometryTolerance || u < -kGeometryTolerance || u > 1.0 + kGeometryTolerance) continue;
-				const WorldPt intersection(firstPoint.x + t * virtualLine.dx, firstPoint.y + t * virtualLine.dy);
-				const double dedupTolerance = std::max(s.intersectionDedupTolerance, virtualLine.length * 1e-6);
-				bool duplicate = false;
-				for (const WorldPt& existing : intersections) {
-					if (std::hypot(existing.x - intersection.x, existing.y - intersection.y) <= dedupTolerance) { duplicate = true; break; }
+				vwad::algo::Point2 hit;
+				double parameter = 0.0;
+				if (vwad::algo::segmentIntersection(query, {
+					{segment.start.x, segment.start.y},
+					{segment.end.x, segment.end.y},
+				}, hit, parameter)) {
+					appendIntersection(WorldPt(hit.x, hit.y));
 				}
-				if (duplicate) continue;
-				intersections.push_back(intersection);
 			}
 		}
 
@@ -999,7 +1202,25 @@ namespace AutoDimensionPlugin
 		const WorldCube cube = GetSourcesCube(sources);
 		ViewPlane::SPlanarBounds bounds;
 		if (plane.planar) ViewPlane::AddCubeCorners(plane, cube, bounds);
-		else { bounds.Add(WorldPt(cube.MinX(), cube.MinY())); bounds.Add(WorldPt(cube.MaxX(), cube.MaxY())); }
+		else {
+			for (MCObjectHandle source : sources) {
+				ComplexGeometry::SCollection geometry = ComplexGeometry::Collect(source);
+				ComplexGeometry::SAxisAlignedBounds sourceBounds;
+				if (ComplexGeometry::CalculateAxisAlignedBounds(geometry, sourceBounds)) {
+					bounds.Add(WorldPt(sourceBounds.minX, sourceBounds.minY));
+					bounds.Add(WorldPt(sourceBounds.maxX, sourceBounds.maxY));
+				}
+				else {
+					WorldRectVerts fallback;
+					if (!gSDK->GetObjectTopPlanBounds(source, fallback) || fallback.IsEmpty()) continue;
+					for (size_t corner = 0; corner < 4; ++corner) bounds.Add(fallback.ClockwiseFromTopLeft(corner));
+				}
+			}
+			if (!bounds.valid) {
+				bounds.Add(WorldPt(cube.MinX(), cube.MinY()));
+				bounds.Add(WorldPt(cube.MaxX(), cube.MaxY()));
+			}
+		}
 		if (!bounds.valid) return 0;
 		const WorldCoord extent = std::max<WorldCoord>(bounds.Width(), bounds.Height());
 		const WorldCoord offset = std::max<WorldCoord>(s.dimOffsetBase, extent * s.dimOffsetRatio);
@@ -1047,6 +1268,57 @@ namespace AutoDimensionPlugin
 		return sourceBounds;
 	}
 
+	static bool EstimateDimensionTextBounds(
+		MCObjectHandle dimension,
+		const WorldPt& start,
+		const WorldPt& end,
+		WorldCoord textOffset,
+		WorldCoord textAboveLine,
+		bool textInside,
+		WorldRect& outBounds)
+	{
+		const WorldCoord dx = end.x - start.x;
+		const WorldCoord dy = end.y - start.y;
+		const WorldCoord dimensionLength = std::hypot(dx, dy);
+		if (dimensionLength <= kGeometryTolerance) return false;
+		const WorldPt axis(dx / dimensionLength, dy / dimensionLength);
+		const WorldPt normal(-axis.y, axis.x);
+		double startOffset = 0.0;
+		GetDimensionReal(dimension, ovDimStartOffset, startOffset);
+		WorldCoord along = dimensionLength * 0.5;
+		if (textInside) along = std::clamp<WorldCoord>(textOffset, 0.0, 1.0) * dimensionLength;
+		else {
+			const WorldCoord outside = CurrentUnitsToWorld(std::abs(textOffset));
+			along = textOffset < 0.0 ? -outside : dimensionLength + outside;
+		}
+		const WorldCoord above = CurrentUnitsToWorld(textAboveLine);
+		const WorldPt center(
+			start.x + normal.x * startOffset + axis.x * along + normal.x * above,
+			start.y + normal.y * startOffset + axis.y * along + normal.y * above);
+
+		double textSizePoints = 10.0;
+		GetDimensionReal(dimension, ovDimTextSizeInPoints, textSizePoints);
+		double_gs textHeight = 0.0;
+		gSDK->WrapPageLengthToCoordLengthN(std::max(1.0, textSizePoints) / 72.0, textHeight);
+		if (textHeight <= kGeometryTolerance) textHeight = std::max<WorldCoord>(1.0, dimensionLength * 0.03);
+		size_t characterCount = 6;
+		for (short selector : {ovDimLeaderText, ovDimTrailerText, ovDimNoteText, ovDimLeaderText2, ovDimTrailerText2}) {
+			TXString text;
+			if (GetDimensionString(dimension, selector, text)) characterCount += static_cast<size_t>(text.GetLength());
+		}
+		const WorldCoord textWidth = textHeight * 0.62 * static_cast<WorldCoord>(std::clamp<size_t>(characterCount, 3, 40));
+		Sint16 rotation = kAlign;
+		GetDimensionShort(dimension, ovDimTextRotation, rotation);
+		WorldPt textAxis = axis;
+		if (rotation != kAlign) textAxis = std::abs(dx) >= std::abs(dy) ? WorldPt(1.0, 0.0) : WorldPt(0.0, 1.0);
+		const WorldPt textNormal(-textAxis.y, textAxis.x);
+		const WorldCoord padding = textHeight * 0.25;
+		const WorldCoord halfX = std::abs(textAxis.x) * textWidth * 0.5 + std::abs(textNormal.x) * textHeight * 0.5 + padding;
+		const WorldCoord halfY = std::abs(textAxis.y) * textWidth * 0.5 + std::abs(textNormal.y) * textHeight * 0.5 + padding;
+		outBounds = WorldRect(center.x - halfX, center.y + halfY, center.x + halfX, center.y - halfY);
+		return true;
+	}
+
 	static size_t AvoidDimensionTextCollisions(const std::vector<MCObjectHandle>& dimensions, const std::vector<WorldRect>& sourceBounds, std::vector<MCObjectHandle>& ioUndoRegistered)
 	{
 		const SAutoDimSettings s = GetAutoDimSettings();
@@ -1068,12 +1340,11 @@ namespace AutoDimensionPlugin
 			WorldPt start;
 			WorldPt end;
 			bool textInside = true;
-			if (gSDK->GetObjectBounds(dimension, info.bounds) &&
-				GetDimensionPoint(dimension, ovDimStartPt, start) &&
-				GetDimensionPoint(dimension, ovDimEndPt, end) &&
+			if (GetDimensionEndpoints(dimension, start, end) &&
 				GetDimensionReal(dimension, ovDimTextOffsetInCurrUnits, info.textOffset) &&
 				GetDimensionReal(dimension, ovDimTextAboveLineInCurrUnits, info.textAboveLine) &&
-				GetDimensionBool(dimension, ovDimTextPosInside, textInside)) {
+				GetDimensionBool(dimension, ovDimTextPosInside, textInside) &&
+				EstimateDimensionTextBounds(dimension, start, end, info.textOffset, info.textAboveLine, textInside, info.bounds)) {
 				info.textInside = textInside;
 				info.start = start;
 				info.end = end;
@@ -1106,6 +1377,73 @@ namespace AutoDimensionPlugin
 		const WorldCoord extrapolateInitialInCurrentUnits = 2 * avoidStepInCurrentUnits;
 		const WorldCoord extrapolateStepInCurrentUnits = avoidStepInCurrentUnits;
 		constexpr WorldCoord kTolerance = 2.0;
+
+		// Seed the SDK-specific correction loop with a deterministic global discrete
+		// layout. The pure solver considers all selected dimensions and source
+		// obstacles together, removing most of the old pair-order dependence. The
+		// later measured-bounds loop remains as a host-accurate refinement pass.
+		std::vector<vwad::algo::LabelInput> layoutInputs;
+		layoutInputs.reserve(dimensionBounds.size());
+		for (const DimensionBoundsInfo& info : dimensionBounds) {
+			layoutInputs.push_back({
+				{
+					std::min(info.bounds.left, info.bounds.right),
+					std::min(info.bounds.bottom, info.bounds.top),
+					std::max(info.bounds.left, info.bounds.right),
+					std::max(info.bounds.bottom, info.bounds.top),
+				},
+				{
+					(info.end.x - info.start.x) / info.dimensionLength,
+					(info.end.y - info.start.y) / info.dimensionLength,
+				},
+				s.avoidStep,
+				s.avoidStep,
+				1.0,
+			});
+		}
+		std::vector<vwad::algo::LabelBox> layoutObstacles;
+		layoutObstacles.reserve(sourceBounds.size());
+		for (const WorldRect& obstacle : sourceBounds) {
+			layoutObstacles.push_back({
+				std::min(obstacle.left, obstacle.right),
+				std::min(obstacle.bottom, obstacle.top),
+				std::max(obstacle.left, obstacle.right),
+				std::max(obstacle.bottom, obstacle.top),
+			});
+		}
+		const int maximumNormalSteps = static_cast<int>(std::min<size_t>(8, std::max<size_t>(2, s.avoidIterations / 2)));
+		const auto initialLayout = vwad::algo::optimizeLabelLayout(
+			layoutInputs,
+			layoutObstacles,
+			3,
+			maximumNormalSteps,
+			kTolerance);
+		for (size_t dimension = 0; dimension < dimensionBounds.size(); ++dimension) {
+			const auto& placement = initialLayout[dimension];
+			if (placement.alongSteps == 0 && placement.normalSteps == 0) continue;
+			DimensionBoundsInfo& info = dimensionBounds[dimension];
+			WorldCoord newOffset = info.textOffset;
+			if (info.textInside) {
+				newOffset += static_cast<WorldCoord>(placement.alongSteps) * s.avoidStep / info.dimensionLength;
+				newOffset = std::clamp<WorldCoord>(newOffset, 0.0, 1.0);
+			}
+			else {
+				newOffset += static_cast<WorldCoord>(placement.alongSteps) * avoidStepInCurrentUnits;
+			}
+			const WorldCoord newAbove = info.textAboveLine +
+				static_cast<WorldCoord>(placement.normalSteps) * avoidStepInCurrentUnits;
+			const bool changed = ApplyDimensionVariableTransaction(info.handle, {
+				{ ovDimTextOffsetInCurrUnits, TVariableBlock(static_cast<Real64>(newOffset)) },
+				{ ovDimTextAboveLineInCurrUnits, TVariableBlock(static_cast<Real64>(newAbove)) },
+				{ ovDimTextPosCalculated, TVariableBlock(static_cast<Boolean>(false)) },
+			}, ioUndoRegistered);
+			if (changed) {
+				info.textOffset = newOffset;
+				info.textAboveLine = newAbove;
+				EstimateDimensionTextBounds(info.handle, info.start, info.end, info.textOffset, info.textAboveLine, info.textInside, info.bounds);
+				adjusted[dimension] = true;
+			}
+		}
 
 		const auto rectsOverlap = [&](const WorldRect& a, const WorldRect& b) -> bool {
 			return !(a.right + kTolerance < b.left || b.right + kTolerance < a.left ||
@@ -1185,7 +1523,7 @@ namespace AutoDimensionPlugin
 							}
 						}
 						if (changed) {
-							gSDK->GetObjectBounds(info.handle, info.bounds);
+							EstimateDimensionTextBounds(info.handle, info.start, info.end, info.textOffset, info.textAboveLine, info.textInside, info.bounds);
 							adjusted[dimension] = true;
 							roundAdjusted[dimension] = true;
 							movedAwayFromSource = true;
@@ -1248,7 +1586,7 @@ namespace AutoDimensionPlugin
 						}
 					}
 					if (changed) {
-						gSDK->GetObjectBounds(info.handle, info.bounds);
+						EstimateDimensionTextBounds(info.handle, info.start, info.end, info.textOffset, info.textAboveLine, info.textInside, info.bounds);
 						adjusted[first] = true;
 					}
 					else {
@@ -1288,11 +1626,13 @@ namespace AutoDimensionPlugin
 						const WorldCoord newOffset = sideSigns[sideIndex] * off;
 						const bool written = ApplyDimensionVariableTransaction(info.handle, {
 							{ ovDimTextOffsetInCurrUnits, TVariableBlock(static_cast<Real64>(newOffset)) },
+							{ ovDimTextPosInside, TVariableBlock(static_cast<Boolean>(false)) },
 							{ ovDimTextPosCalculated, TVariableBlock(static_cast<Boolean>(false)) },
 						}, ioUndoRegistered);
 						if (!written) break;
 						info.textOffset = newOffset;
-						gSDK->GetObjectBounds(info.handle, info.bounds);
+						info.textInside = false;
+						EstimateDimensionTextBounds(info.handle, info.start, info.end, info.textOffset, info.textAboveLine, info.textInside, info.bounds);
 						if (!stillCollides(dimension)) {
 							extrapolated[dimension] = true;
 							adjusted[dimension] = true;
@@ -1347,7 +1687,7 @@ namespace AutoDimensionPlugin
 	static bool BuildMergeDimensionInfo(MCObjectHandle dimension, SMergeDimensionInfo& outInfo)
 	{
 		if (!dimension || gSDK->GetObjectTypeN(dimension) != dimHeaderNode) return false;
-		if (!GetDimensionPoint(dimension, ovDimStartPt, outInfo.start) || !GetDimensionPoint(dimension, ovDimEndPt, outInfo.end)) return false;
+		if (!GetDimensionEndpoints(dimension, outInfo.start, outInfo.end)) return false;
 		if (!GetDimensionUnsignedChar(dimension, ovDimClass, outInfo.dimensionClass) || outInfo.dimensionClass > 1) return false;
 		if (!GetDimensionReal(dimension, ovDimStartOffset, outInfo.startOffset) || !GetDimensionString(dimension, ovDimStandardName, outInfo.standardName)) return false;
 
@@ -1452,12 +1792,67 @@ namespace AutoDimensionPlugin
 
 	static std::vector<MCObjectHandle> CollectSelectedSources();
 
-	static size_t EditSelectedDimensions(size_t editMode, const ViewPlane::SViewPlane& plane, const std::vector<MCObjectHandle>& dimensions)
+	static bool GetDimensionAxis(const WorldPt& start, const WorldPt& end, Uint8 dimensionClass, WorldCoord& outX, WorldCoord& outY)
+	{
+		const WorldCoord dx = end.x - start.x;
+		const WorldCoord dy = end.y - start.y;
+		const WorldCoord length = std::hypot(dx, dy);
+		if (length <= kGeometryTolerance || dimensionClass > 1) return false;
+		if (dimensionClass == 0) {
+			// Constrained dimensions have a horizontal or vertical dimension line even
+			// when their two measured witness origins are not axis-aligned.
+			outX = std::abs(dx) >= std::abs(dy) ? (dx < 0.0 ? -1.0 : 1.0) : 0.0;
+			outY = outX == 0.0 ? (dy < 0.0 ? -1.0 : 1.0) : 0.0;
+		}
+		else {
+			outX = dx / length;
+			outY = dy / length;
+		}
+		return true;
+	}
+
+	static MCObjectHandle CreateLinearReplacement(
+		MCObjectHandle source,
+		const WorldPt& start,
+		const WorldPt& end,
+		WorldCoord offset,
+		Uint8 dimensionClass,
+		const ViewPlane::SViewPlane& plane,
+		const char* traceName)
+	{
+		const WorldCoord dx = end.x - start.x;
+		const WorldCoord dy = end.y - start.y;
+		const WorldCoord length = std::hypot(dx, dy);
+		if (length <= kGeometryTolerance || dimensionClass > 1) return nullptr;
+		const Vector2 direction = dimensionClass == 1 ? Vector2(dx / length, dy / length) : Vector2(0.0, 0.0);
+		const short dimensionType = dimensionClass == 1 ? kLinearDimensionTypeAligned : kLinearDimensionTypeOrtho;
+		MCObjectHandle replacement = gSDK->CreateLinearDimension(start, end, offset, 0.0, direction, dimensionType);
+		if (!replacement) return nullptr;
+		ApplyDimensionPresentation(replacement, plane, traceName);
+		if (!CopyDimensionPresentationFrom(source, replacement)) {
+			gSDK->DeleteObject(replacement, false);
+			return nullptr;
+		}
+		return replacement;
+	}
+
+	static size_t EditSelectedDimensions(size_t editMode, const ViewPlane::SViewPlane& plane, const std::vector<MCObjectHandle>& dimensions, const WorldPt& editPoint)
 	{
 		if (dimensions.empty()) return 0;
 
+		// Atomic rollback (UndoAndRemove) requires SupportUndoAndRemove before SetUndoMethod.
+		// The swap-and-replace edit modes register a new object and then the original; if the
+		// original's registration fails they roll the whole (still unended) undo event back so no
+		// orphaned swap primitive is left behind. Merge already used this; extend it to the rest.
+		if (editMode == kEditMerge || editMode == kEditConvert || editMode == kEditAlign ||
+			editMode == kEditSplitExtend || editMode == kEditPoints) {
+			gSDK->SupportUndoAndRemove();
+		}
 		gSDK->SetUndoMethod(kUndoSwapObjects);
 		size_t changedCount = 0;
+		// Set when a replacement was registered in the undo table but the original could not
+		// be; the whole (unended) event is rolled back via UndoAndRemove before returning.
+		bool swapFailed = false;
 		std::vector<MCObjectHandle> undoRegistered;
 		if (editMode == kEditAvoid) {
 			const std::vector<MCObjectHandle> sources = CollectSelectedSources();
@@ -1476,17 +1871,58 @@ namespace AutoDimensionPlugin
 			}
 		}
 		std::vector<MCObjectHandle> chainSources;
-		WorldCoord sharedOffset = 0.0;
-		bool hasSharedOffset = false;
-		if (editMode == kEditAlign && GetDimensionReal(dimensions.front(), ovDimStartOffset, sharedOffset)) hasSharedOffset = true;
+		vwad::algo::Segment2 alignmentTargetLine;
+		bool hasAlignmentReference = false;
+		if (editMode == kEditAlign) {
+			WriteAlignmentTrace("begin selected=" + std::to_string(dimensions.size())
+				+ " click=" + std::to_string(editPoint.x) + "," + std::to_string(editPoint.y));
+			// The click defines the target dimension line.  Use the orientation of the
+			// selected dimension line nearest that click, so a mixed H/V selection has a
+			// deterministic target family and reversed endpoint order remains harmless.
+			WorldCoord nearestLineDistance = std::numeric_limits<WorldCoord>::max();
+			for (MCObjectHandle candidateDimension : dimensions) {
+				WorldPt candidateStart, candidateEnd;
+				WorldCoord candidateOffset = 0.0;
+				Uint8 candidateClass = 0;
+				const bool pointsOK = GetDimensionEndpoints(candidateDimension, candidateStart, candidateEnd);
+				const bool offsetOK = GetDimensionReal(candidateDimension, ovDimStartOffset, candidateOffset);
+				const bool classOK = GetDimensionUnsignedChar(candidateDimension, ovDimClass, candidateClass);
+				WriteAlignmentTrace("reference points=" + std::to_string(pointsOK)
+					+ " offset=" + std::to_string(offsetOK) + ":" + std::to_string(candidateOffset)
+					+ " class=" + std::to_string(classOK) + ":" + std::to_string(candidateClass)
+					+ " start=" + std::to_string(candidateStart.x) + "," + std::to_string(candidateStart.y)
+					+ " end=" + std::to_string(candidateEnd.x) + "," + std::to_string(candidateEnd.y));
+				if (!pointsOK || !offsetOK || !classOK || candidateClass > 1) continue;
+				WorldCoord directionX = 0.0;
+				WorldCoord directionY = 0.0;
+				if (!GetDimensionAxis(candidateStart, candidateEnd, candidateClass, directionX, directionY)) continue;
+				const WorldCoord normalX = -directionY;
+				const WorldCoord normalY = directionX;
+				const WorldPt linePoint(candidateStart.x + normalX * candidateOffset, candidateStart.y + normalY * candidateOffset);
+				const WorldCoord lineDistance = std::abs((editPoint.x - linePoint.x) * normalX + (editPoint.y - linePoint.y) * normalY);
+				if (lineDistance < nearestLineDistance) {
+					nearestLineDistance = lineDistance;
+					alignmentTargetLine = {
+						{editPoint.x, editPoint.y},
+						{editPoint.x + directionX, editPoint.y + directionY},
+					};
+					hasAlignmentReference = true;
+				}
+			}
+		}
 		for (MCObjectHandle dimension : dimensions) {
 			WorldPt start;
 			WorldPt end;
-			const bool hasPoints = GetDimensionPoint(dimension, ovDimStartPt, start) && GetDimensionPoint(dimension, ovDimEndPt, end);
-			if (!hasPoints) continue;
+			// Reading the witness origins is needed by the geometry-editing modes only.
+			// Text and merge operations work on the dimension object directly, so a
+			// failed endpoint read must not disable them (it used to, which silently
+			// killed text-direction / reset-text / reset-text-position on dimensions
+			// whose endpoints the SDK would not expose).
+			const bool hasPoints = GetDimensionEndpoints(dimension, start, end);
 
 			switch (editMode) {
 			case kEditConvert:
+				if (!hasPoints) break;
 			{
 				Uint8 dimensionClass = 0;
 				if (!GetDimensionUnsignedChar(dimension, ovDimClass, dimensionClass) || dimensionClass != 1) break;
@@ -1500,33 +1936,45 @@ namespace AutoDimensionPlugin
 				const WorldPt projectionEnd = horizontal
 					? WorldPt(end.x, start.y)
 					: WorldPt(start.x, end.y);
-				// The aligned offset is the perpendicular distance to the sloped axis, while
-				// the orthogonal offset is the vertical (horizontal projection) or horizontal
-				// (vertical projection) distance to the H/V axis. Scale by 1/cosθ (or 1/sinθ)
-				// so the dimension line stays at the same world position; the factor is >= 1
-				// and |dx|/|dy| > 0 is guaranteed by the length guard above.
-				const WorldCoord scaleFactor = horizontal ? (length / std::abs(dx)) : (length / std::abs(dy));
-				const WorldCoord convertedOffset = sourceOffset * scaleFactor;
-				MCObjectHandle replacement = gSDK->CreateLinearDimension(start, projectionEnd, convertedOffset, 0.0, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho);
+				// Keep the rebuilt dimension line at the same world position as the source
+				// line. The source offset is measured along the source normal n_s =
+				// (-dy, dx)/length. The ortho target normal is (0,1) for horizontal and
+				// (+1,0) for vertical (Vectorworks places a positive offset up / to the
+				// right), so the required target offset is sourceOffset * dot(n_s, n_target)
+				// — the signed projection of the offset onto the target normal. The previous
+				// length/abs(dx) factor was the reciprocal of this projection and inflated
+				// the offset (e.g. √2 for a 45° source) instead of shrinking it to the true
+				// perpendicular distance.
+				const WorldCoord convertedOffset = horizontal
+					? sourceOffset * (dx / length)
+					: sourceOffset * (-dy / length);
+				MCObjectHandle replacement = CreateLinearReplacement(
+					dimension, start, projectionEnd, convertedOffset, 0, plane, "converted");
 				if (replacement) {
 					VWAD_RUNTIME_TRACE("edit-convert dimension=" + DescribeObject(dimension)
 						+ " sourceOffset=" + std::to_string(sourceOffset)
 						+ " convertedOffset=" + std::to_string(convertedOffset));
 				}
 				if (replacement) {
-					ViewPlane::ApplyPlanarRef(replacement, plane);
-					const Boolean replacementAdded = CopyDimensionPresentationFrom(dimension, replacement) && gSDK->AddAfterSwapObject(replacement);
+					const Boolean replacementAdded = gSDK->AddAfterSwapObject(replacement);
 					if (replacementAdded && gSDK->AddBeforeSwapObject(dimension)) {
 						gSDK->DeleteObject(dimension, true);
 						++changedCount;
 					}
+					else if (replacementAdded) {
+						// New dimension registered but the original could not be; roll the
+						// whole (unended) undo event back so no orphaned swap primitive
+						// survives. UndoAndRemove deletes the registered replacement.
+						swapFailed = true;
+					}
 					else {
-						gSDK->DeleteObject(replacement, replacementAdded);
+						gSDK->DeleteObject(replacement, false);
 					}
 				}
 				break;
 			}
 			case kEditTrim:
+				if (!hasPoints) break;
 			{
 				// Only explicitly selected source objects may affect trimming. The public
 				// SDK does not expose a dependable source association for dimensions.
@@ -1540,7 +1988,8 @@ namespace AutoDimensionPlugin
 				GetDimensionReal(dimension, ovDimStartOffset, currentOffset);
 				const WorldCoord normalX = -dy / length;
 				const WorldCoord normalY = dx / length;
-				const WorldCoord direction = currentOffset >= 0.0 ? 1.0 : -1.0;
+				const WorldCoord direction = currentOffset > kGeometryTolerance ? 1.0 :
+					(currentOffset < -kGeometryTolerance ? -1.0 : 0.0);
 
 				auto findNearestWitnessIntersection = [&](const WorldPt& endpoint, WorldCoord& outDistance) {
 					bool found = false;
@@ -1549,13 +1998,15 @@ namespace AutoDimensionPlugin
 						const WorldCoord sx = segment.end.x - segment.start.x;
 						const WorldCoord sy = segment.end.y - segment.start.y;
 						const WorldCoord det = normalX * sy - normalY * sx;
-						if (std::abs(det) <= kGeometryTolerance) continue;
+						const WorldCoord segmentLength = std::hypot(sx, sy);
+						const WorldCoord determinantTolerance = std::max<WorldCoord>(kGeometryTolerance, segmentLength * 1e-9);
+						if (std::abs(det) <= determinantTolerance) continue;
 						const WorldCoord qx = segment.start.x - endpoint.x;
 						const WorldCoord qy = segment.start.y - endpoint.y;
 						const WorldCoord distance = (qx * sy - qy * sx) / det;
 						const WorldCoord segmentRatio = (qx * normalY - qy * normalX) / det;
-						if (segmentRatio < -kGeometryTolerance || segmentRatio > 1.0 + kGeometryTolerance ||
-							distance * direction < -kGeometryTolerance) continue;
+						if (segmentRatio < -1e-8 || segmentRatio > 1.0 + 1e-8 ||
+							(direction != 0.0 && distance * direction < -kGeometryTolerance)) continue;
 						if (!found || std::abs(distance) < std::abs(nearest)) {
 							nearest = distance;
 							found = true;
@@ -1589,13 +2040,61 @@ namespace AutoDimensionPlugin
 				break;
 			}
 			case kEditAlign:
+				if (!hasPoints) break;
 			{
-				if (hasSharedOffset && ApplyDimensionVariableTransaction(dimension, {
-					{ ovDimStartOffset, TVariableBlock(static_cast<Real64>(sharedOffset)) },
-				}, undoRegistered)) ++changedCount;
+				Uint8 dimensionClass = 0;
+				double targetOffset = 0.0;
+				WorldCoord directionX = 0.0;
+				WorldCoord directionY = 0.0;
+				if (hasAlignmentReference &&
+					GetDimensionUnsignedChar(dimension, ovDimClass, dimensionClass) &&
+					dimensionClass <= 1 &&
+					GetDimensionAxis(start, end, dimensionClass, directionX, directionY)) {
+					const vwad::algo::Segment2 candidate{{start.x, start.y}, {start.x + directionX, start.y + directionY}};
+					const bool offsetDerived = vwad::algo::alignedDimensionOffset(alignmentTargetLine, 0.0, candidate, targetOffset);
+					WriteAlignmentTrace("candidate derived=" + std::to_string(offsetDerived)
+						+ " class=" + std::to_string(dimensionClass)
+						+ " target=" + std::to_string(targetOffset));
+					if (!offsetDerived) break;
+					// Vectorworks places a constrained (ortho) vertical dimension to the
+					// right for a positive offset, while the unified candidate normal
+					// (-directionY, directionX) points left. Flip the sign for vertical
+					// ortho dimensions so the rebuilt dimension stays on the clicked side
+					// instead of being mirrored across the witness origin (horizontal
+					// ortho dimensions already agree with the unified normal and keep it).
+				targetOffset = vwad::algo::orthoVerticalAlignOffset(targetOffset, dimensionClass, directionX, directionY);
+					double currentOffset = 0.0;
+					const bool currentOffsetOK = GetDimensionReal(dimension, ovDimStartOffset, currentOffset);
+					WriteAlignmentTrace("candidate current=" + std::to_string(currentOffsetOK) + ":" + std::to_string(currentOffset));
+					if (!currentOffsetOK || std::abs(currentOffset - targetOffset) <= std::max<double>(kGeometryTolerance, std::abs(targetOffset) * 1e-9)) break;
+					MCObjectHandle replacement = CreateLinearReplacement(
+						dimension, start, end, targetOffset, dimensionClass, plane, "aligned-to-click");
+					WriteAlignmentTrace("candidate replacement=" + std::to_string(replacement != nullptr));
+					if (replacement) {
+						const Boolean replacementAdded = gSDK->AddAfterSwapObject(replacement);
+						const Boolean sourceAdded = replacementAdded ? gSDK->AddBeforeSwapObject(dimension) : false;
+						WriteAlignmentTrace("candidate undo after=" + std::to_string(replacementAdded != 0)
+							+ " before=" + std::to_string(sourceAdded != 0));
+						if (replacementAdded && sourceAdded) {
+							gSDK->DeleteObject(dimension, true);
+							++changedCount;
+							VWAD_RUNTIME_TRACE("edit-align rebuilt targetOffset=" + std::to_string(targetOffset));
+						}
+						else if (replacementAdded) {
+							// New dimension registered but the original could not be; roll the
+							// whole (unended) undo event back so no orphaned swap primitive
+							// survives. UndoAndRemove deletes the registered replacement.
+							swapFailed = true;
+						}
+						else {
+							gSDK->DeleteObject(replacement, false);
+						}
+					}
+				}
 				break;
 			}
 			case kEditSplitExtend:
+				if (!hasPoints) break;
 			{
 				Uint8 dimensionClass = 0;
 				if (!GetDimensionUnsignedChar(dimension, ovDimClass, dimensionClass) || dimensionClass > 1) break;
@@ -1603,30 +2102,76 @@ namespace AutoDimensionPlugin
 				const double dy = end.y - start.y;
 				const double length = std::hypot(dx, dy);
 				if (length > kGeometryTolerance) {
-					const WorldPt midpoint((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
-					const Vector2 direction(dx / length, dy / length);
+					// Project the click onto the rendered dimension axis, not the witness
+					// chord. For an ortho (corner) dimension the two witness origins can be
+					// oblique while the displayed dimension line is horizontal/vertical, so
+					// projecting along the chord would split/extend in the wrong direction.
+					// For an aligned (class 1) dimension the axis equals the witness chord,
+					// so the same math keeps its previous behaviour.
+					WorldCoord axisX = 0.0;
+					WorldCoord axisY = 0.0;
+					if (!GetDimensionAxis(start, end, dimensionClass, axisX, axisY)) break;
+					const WorldCoord nx = -axisY;
+					const WorldCoord ny = axisX;
 					WorldCoord sourceOffset = 0.0;
-					GetDimensionReal(dimension, ovDimStartOffset, sourceOffset);
-					MCObjectHandle firstHalf = gSDK->CreateLinearDimension(start, midpoint, sourceOffset, 0.0, direction, kLinearDimensionTypeAligned);
-					MCObjectHandle secondHalf = gSDK->CreateLinearDimension(midpoint, end, sourceOffset, 0.0, direction, kLinearDimensionTypeAligned);
+					if (!GetDimensionReal(dimension, ovDimStartOffset, sourceOffset)) break;
+					// The dimension line sits one offset away from the start witness origin,
+					// along the normal. Measure the click relative to that line.
+					const WorldPt lineStart(start.x + nx * sourceOffset, start.y + ny * sourceOffset);
+					const WorldCoord along = (editPoint.x - lineStart.x) * axisX + (editPoint.y - lineStart.y) * axisY;
+					const WorldCoord axisLength = (end.x - start.x) * axisX + (end.y - start.y) * axisY;
+					const WorldCoord endpointTolerance = std::max<WorldCoord>(kGeometryTolerance, axisLength * 1e-6);
+
+					if (along > endpointTolerance && along < axisLength - endpointTolerance) {
+					const WorldPt splitLinePoint(lineStart.x + axisX * along, lineStart.y + axisY * along);
+					const WorldPt splitWitness(splitLinePoint.x - nx * sourceOffset, splitLinePoint.y - ny * sourceOffset);
+					MCObjectHandle firstHalf = CreateLinearReplacement(
+						dimension, start, splitWitness, sourceOffset, dimensionClass, plane, "split-first");
+					MCObjectHandle secondHalf = CreateLinearReplacement(
+						dimension, splitWitness, end, sourceOffset, dimensionClass, plane, "split-second");
 					if (firstHalf && secondHalf) {
-						ApplyDimensionPresentation(firstHalf, plane, "split-first");
-						ApplyDimensionPresentation(secondHalf, plane, "split-second");
-						const Boolean presentationCopied = CopyDimensionPresentationFrom(dimension, firstHalf) && CopyDimensionPresentationFrom(dimension, secondHalf);
-						const Boolean firstAdded = presentationCopied && gSDK->AddAfterSwapObject(firstHalf);
-						const Boolean secondAdded = presentationCopied && gSDK->AddAfterSwapObject(secondHalf);
+						const Boolean firstAdded = gSDK->AddAfterSwapObject(firstHalf);
+						const Boolean secondAdded = firstAdded && gSDK->AddAfterSwapObject(secondHalf);
 						if (firstAdded && secondAdded && gSDK->AddBeforeSwapObject(dimension)) {
 							gSDK->DeleteObject(dimension, true);
-							changedCount += 2;
+							++changedCount;
+						}
+						else if (firstAdded || secondAdded) {
+							// At least one replacement half is registered; roll the whole
+							// (unended) undo event back so no orphaned swap primitive survives.
+							// UndoAndRemove deletes the registered half; free the other temp.
+							swapFailed = true;
+							if (!firstAdded) gSDK->DeleteObject(firstHalf, false);
+							if (!secondAdded) gSDK->DeleteObject(secondHalf, false);
 						}
 						else {
-							gSDK->DeleteObject(firstHalf, firstAdded);
-							gSDK->DeleteObject(secondHalf, secondAdded);
+							gSDK->DeleteObject(firstHalf, false);
+							gSDK->DeleteObject(secondHalf, false);
 						}
 					}
 					else {
 						if (firstHalf) gSDK->DeleteObject(firstHalf, false);
 						if (secondHalf) gSDK->DeleteObject(secondHalf, false);
+					}
+					}
+					else if (along < -endpointTolerance || along > axisLength + endpointTolerance) {
+						const WorldPt splitLinePoint(lineStart.x + axisX * along, lineStart.y + axisY * along);
+						const WorldPt splitWitness(splitLinePoint.x - nx * sourceOffset, splitLinePoint.y - ny * sourceOffset);
+						const WorldPt extendedStart = along < 0.0 ? splitWitness : start;
+						const WorldPt extendedEnd = along > axisLength ? splitWitness : end;
+						MCObjectHandle replacement = CreateLinearReplacement(
+							dimension, extendedStart, extendedEnd, sourceOffset, dimensionClass, plane, "extended");
+						if (replacement) {
+							const Boolean replacementAdded = gSDK->AddAfterSwapObject(replacement);
+							if (replacementAdded && gSDK->AddBeforeSwapObject(dimension)) {
+								gSDK->DeleteObject(dimension, true);
+								++changedCount;
+							}
+							else if (replacementAdded) {
+								swapFailed = true;
+							}
+							else gSDK->DeleteObject(replacement, false);
+						}
 					}
 				}
 				break;
@@ -1637,8 +2182,39 @@ namespace AutoDimensionPlugin
 				}, undoRegistered)) ++changedCount;
 				break;
 			case kEditPoints:
+				if (!hasPoints) break;
 				if (start.x > end.x || (std::abs(start.x - end.x) <= kGeometryTolerance && start.y > end.y)) {
-					if (SwapDimensionEndpointsAndWitnessOffsets(dimension, start, end, undoRegistered)) ++changedCount;
+					Uint8 dimensionClass = 0;
+					double sourceOffset = 0.0;
+					double startWitnessOffset = 0.0;
+					double endWitnessOffset = 0.0;
+					if (!GetDimensionUnsignedChar(dimension, ovDimClass, dimensionClass) || dimensionClass > 1 ||
+						!GetDimensionReal(dimension, ovDimStartOffset, sourceOffset) ||
+						!GetDimensionReal(dimension, ovDimCustStartWitOffset, startWitnessOffset) ||
+						!GetDimensionReal(dimension, ovDimCustEndWitOffset, endWitnessOffset)) break;
+				// Reversing start/end flips the aligned normal (-dy,dx)/L, so an aligned
+				// dimension must negate its offset to stay on the same side. Ortho (corner)
+				// dimensions use an axis-fixed normal (up for horizontal, right for vertical)
+				// that does NOT depend on endpoint order, so negating would mirror the line
+				// to the opposite side. Only negate for aligned dimensions.
+				const WorldCoord reversedOffset = vwad::algo::reversedDimensionOffset(sourceOffset, dimensionClass);
+				MCObjectHandle replacement = CreateLinearReplacement(
+					dimension, end, start, reversedOffset, dimensionClass, plane, "points-reversed");
+					if (replacement) {
+						const bool witnessSwapped =
+							gSDK->SetObjectVariable(replacement, ovDimCustStartWitOffset, TVariableBlock(static_cast<Real64>(endWitnessOffset))) &&
+							gSDK->SetObjectVariable(replacement, ovDimCustEndWitOffset, TVariableBlock(static_cast<Real64>(startWitnessOffset)));
+					if (witnessSwapped) gSDK->ResetObject(replacement);
+					const Boolean replacementAdded = witnessSwapped && gSDK->AddAfterSwapObject(replacement);
+					if (replacementAdded && gSDK->AddBeforeSwapObject(dimension)) {
+						gSDK->DeleteObject(dimension, true);
+						++changedCount;
+					}
+					else if (replacementAdded) {
+						swapFailed = true;
+					}
+					else gSDK->DeleteObject(replacement, false);
+					}
 				}
 				break;
 			case kEditMerge:
@@ -1658,15 +2234,29 @@ namespace AutoDimensionPlugin
 			case kEditResetTextPosition:
 				if (ApplyDimensionVariableTransaction(dimension, {
 					{ ovDimTextPosCalculated, TVariableBlock(static_cast<Boolean>(true)) },
-					{ ovDimTextRotation, TVariableBlock(static_cast<Sint16>(kAlign)) },
+					{ ovDimTextPosInside, TVariableBlock(static_cast<Boolean>(true)) },
+					{ ovDimTextOffsetInCurrUnits, TVariableBlock(static_cast<Real64>(0.5)) },
+					{ ovDimTextAboveLineInCurrUnits, TVariableBlock(static_cast<Real64>(0.0)) },
 				}, undoRegistered)) ++changedCount;
 				break;
 			default:
 				break;
 			}
+			// A swap registration failure aborts the whole (unended) undo event; stop
+			// processing further dimensions so we roll back exactly one coherent event.
+			if (swapFailed) break;
 		}
+		if (editMode == kEditAlign) WriteAlignmentTrace("end changed=" + std::to_string(changedCount));
 
-		if (editMode == kEditMerge && chainSources.size() >= 2) {
+		if (swapFailed) {
+			// A replacement was registered in the undo table but its original could not be,
+			// leaving an orphaned swap primitive. UndoAndRemove atomically removes the
+			// registered replacement(s) and restores the untouched originals, so the drawing
+			// and undo table stay consistent. The whole event is reverted: nothing changed.
+			gSDK->UndoAndRemove();
+			changedCount = 0;
+		}
+		else if (editMode == kEditMerge && chainSources.size() >= 2) {
 			const size_t mergeChangedCount = changedCount;
 			std::vector<MCObjectHandle> mergeChains;
 			bool mergeFailed = false;
@@ -1702,27 +2292,30 @@ namespace AutoDimensionPlugin
 					gSDK->DeleteObject(mergeChains[index], false);
 				}
 
-				// Register the original dimensions for undo re-insertion before keeping the
-				// final chain, so no failure can leave the final chain registered while the
-				// merge is being rolled back.
+				// Register the final chain first, then register and delete each original as
+				// one partially built undo event. UndoAndRemove atomically restores already
+				// deleted originals and removes the chain if any later registration fails.
 				MCObjectHandle finalChain = mergeChains.back();
-				for (const SMergeDimensionInfo& source : orderedChainSources) {
-					if (!source.handle || gSDK->GetObjectTypeN(source.handle) != dimHeaderNode) continue;
-					if (!gSDK->AddBeforeSwapObject(source.handle)) {
-						mergeFailed = true;
-						break;
-					}
-				}
-				if (!mergeFailed && !gSDK->AddAfterSwapObject(finalChain)) {
+				bool undoEventStarted = gSDK->AddAfterSwapObject(finalChain);
+				if (!undoEventStarted) {
 					mergeFailed = true;
 				}
 				if (!mergeFailed) {
 					for (const SMergeDimensionInfo& source : orderedChainSources) {
-						if (source.handle && gSDK->GetObjectTypeN(source.handle) == dimHeaderNode) {
-							gSDK->DeleteObject(source.handle, true);
+						if (!source.handle || gSDK->GetObjectTypeN(source.handle) != dimHeaderNode ||
+							!gSDK->AddBeforeSwapObject(source.handle)) {
+							mergeFailed = true;
+							break;
 						}
+						gSDK->DeleteObject(source.handle, true);
 					}
-					changedCount = mergeChangedCount + 1;
+					if (!mergeFailed) changedCount = mergeChangedCount + 1;
+				}
+				if (mergeFailed && undoEventStarted) {
+					gSDK->UndoAndRemove();
+					// UndoAndRemove has deleted finalChain, so none of these handles may be
+					// inspected or deleted again in the generic temporary cleanup below.
+					mergeChains.clear();
 				}
 			}
 			if (mergeFailed) {
@@ -1858,8 +2451,9 @@ namespace AutoDimensionPlugin
 			geometry = ComplexGeometry::Collect(sourceObject);
 			ComplexGeometry::FindDominantAxis(geometry, dominantAxis);
 			hasGeometryBounds = ComplexGeometry::CalculateAxisAlignedBounds(geometry, geometryBounds);
-			if (!geometry.sourceIsOpenPath && dominantAxis.valid && dominantAxis.foldedAngleDegrees > 2.0) {
+			if (!geometry.sourceIsOpenPath && dominantAxis.valid && dominantAxis.confidence >= 0.20 && dominantAxis.foldedAngleDegrees > 2.0) {
 				hasOrientedBounds = ComplexGeometry::CalculateOrientedBounds(geometry, dominantAxis, orientedBounds);
+				if (hasOrientedBounds && dominantAxis.foldedAngleDegrees <= 2.0) hasOrientedBounds = false;
 			}
 
 			#if defined(_DEBUG)
@@ -1880,7 +2474,8 @@ namespace AutoDimensionPlugin
 			if (dominantAxis.valid) {
 				geometryTrace << " direction=" << FormatPoint(dominantAxis.direction)
 					<< " foldedAngleDegrees=" << dominantAxis.foldedAngleDegrees
-					<< " supportLength=" << dominantAxis.supportingLength;
+					<< " supportLength=" << dominantAxis.supportingLength
+					<< " confidence=" << dominantAxis.confidence;
 			}
 			VWAD_RUNTIME_TRACE(geometryTrace.str());
 			#endif
@@ -1922,8 +2517,7 @@ namespace AutoDimensionPlugin
 		const WorldPt leftBottom(minX, minY);
 		const WorldPt rightBottom(maxX, minY);
 		const WorldPt rightTop(maxX, maxY);
-		const bool hasOpenDetails = geometry.sourceIsOpenPath && !geometry.detailSegments.empty();
-		const bool shouldCreateOverall = hasLineMeasurement || (!hasOpenDetails && !hasOrientedBounds);
+		const bool shouldCreateOverall = hasLineMeasurement || !hasOrientedBounds;
 
 		size_t createdCount = 0;
 		gSDK->SetUndoMethod(kUndoSwapObjects);
@@ -1957,13 +2551,14 @@ namespace AutoDimensionPlugin
 		}
 		else if (!hasLineMeasurement && dominantAxis.valid) {
 			if (geometry.sourceIsOpenPath) {
-				std::vector<ComplexGeometry::SMeasuredSegment> details = geometry.detailSegments;
-				std::sort(details.begin(), details.end(), [](const ComplexGeometry::SMeasuredSegment& a, const ComplexGeometry::SMeasuredSegment& b) {
-					return a.length > b.length;
-				});
-				const size_t detailCount = std::min<size_t>(3, details.size());
-				for (size_t index = 0; index < detailCount; ++index) {
-					const ComplexGeometry::SMeasuredSegment& segment = details[index];
+				std::vector<vwad::algo::Segment2> detailGeometry;
+				detailGeometry.reserve(geometry.detailSegments.size());
+				for (const auto& segment : geometry.detailSegments) {
+					detailGeometry.push_back({{segment.start.x, segment.start.y}, {segment.end.x, segment.end.y}});
+				}
+				const std::vector<size_t> representative = vwad::algo::selectRepresentativeSegments(detailGeometry, 3);
+				for (size_t index = 0; index < representative.size(); ++index) {
+					const ComplexGeometry::SMeasuredSegment& segment = geometry.detailSegments[representative[index]];
 					const Vector2 direction(
 						(segment.end.x - segment.start.x) / segment.length,
 						(segment.end.y - segment.start.y) / segment.length);
@@ -1988,22 +2583,28 @@ namespace AutoDimensionPlugin
 				#endif
 
 				if (orientedBounds.width > kGeometryTolerance) {
+					const Vector2 widthDirection(
+						(orientedBounds.widthEnd.x - orientedBounds.widthStart.x) / orientedBounds.width,
+						(orientedBounds.widthEnd.y - orientedBounds.widthStart.y) / orientedBounds.width);
 					AddLinearDimension(
 						orientedBounds.widthStart,
 						orientedBounds.widthEnd,
 						-offset,
-						Vector2(dominantAxis.direction.x, dominantAxis.direction.y),
+						widthDirection,
 						kLinearDimensionTypeAligned,
 						"oriented-width",
 						plane,
 						createdCount);
 				}
 				if (orientedBounds.height > kGeometryTolerance) {
+					const Vector2 heightDirection(
+						(orientedBounds.heightEnd.x - orientedBounds.heightStart.x) / orientedBounds.height,
+						(orientedBounds.heightEnd.y - orientedBounds.heightStart.y) / orientedBounds.height);
 					AddLinearDimension(
 						orientedBounds.heightStart,
 						orientedBounds.heightEnd,
 						offset,
-						Vector2(-dominantAxis.direction.y, dominantAxis.direction.x),
+						heightDirection,
 						kLinearDimensionTypeAligned,
 						"oriented-height",
 						plane,
@@ -2183,6 +2784,7 @@ namespace AutoDimensionPlugin
 
 	static size_t CreateSpacingDimensionsForSelection(const std::vector<MCObjectHandle>& selectedSources, const ViewPlane::SViewPlane& plane)
 	{
+		const SAutoDimSettings s = GetAutoDimSettings();
 		std::vector<SSpacingSource> spacingSources;
 		for (MCObjectHandle sourceObject : selectedSources) {
 			SSpacingSource spacingSource;
@@ -2195,30 +2797,16 @@ namespace AutoDimensionPlugin
 			return 0;
 		}
 
-		const size_t sourceCount = spacingSources.size();
-		const size_t noParent = std::numeric_limits<size_t>::max();
-		std::vector<bool> connected(sourceCount, false);
-		std::vector<double> nearestDistanceSquared(sourceCount, std::numeric_limits<double>::max());
-		std::vector<size_t> nearestParent(sourceCount, noParent);
-		nearestDistanceSquared[0] = 0.0;
+		std::vector<vwad::algo::Point2> centers;
+		centers.reserve(spacingSources.size());
+		for (const SSpacingSource& source : spacingSources) centers.push_back({source.center.x, source.center.y});
+		const auto treeEdges = vwad::algo::orthogonalSpanningTree(centers);
 
 		size_t createdCount = 0;
 		gSDK->SetUndoMethod(kUndoSwapObjects);
-		for (size_t connectedCount = 0; connectedCount < sourceCount; ++connectedCount) {
-			size_t nextIndex = noParent;
-			for (size_t index = 0; index < sourceCount; ++index) {
-				if (!connected[index] && (nextIndex == noParent || nearestDistanceSquared[index] < nearestDistanceSquared[nextIndex])) {
-					nextIndex = index;
-				}
-			}
-			if (nextIndex == noParent) {
-				break;
-			}
-
-			connected[nextIndex] = true;
-			if (nearestParent[nextIndex] != noParent) {
-				WorldPt start = spacingSources[nearestParent[nextIndex]].center;
-				WorldPt end = spacingSources[nextIndex].center;
+		for (const auto& edge : treeEdges) {
+				WorldPt start = spacingSources[edge.first].center;
+				WorldPt end = spacingSources[edge.second].center;
 				WorldCoord dx = end.x - start.x;
 				WorldCoord dy = end.y - start.y;
 				const WorldCoord length = std::hypot(dx, dy);
@@ -2229,8 +2817,8 @@ namespace AutoDimensionPlugin
 						dy = -dy;
 					}
 					const WorldCoord offset = std::max<WorldCoord>(
-						50.0,
-						std::max(spacingSources[nearestParent[nextIndex]].extent, spacingSources[nextIndex].extent) * 0.6);
+						std::max<WorldCoord>(50.0, s.dimOffsetBase),
+						std::max(spacingSources[edge.first].extent, spacingSources[edge.second].extent) * 0.6);
 					AddLinearDimension(
 						start,
 						end,
@@ -2241,20 +2829,6 @@ namespace AutoDimensionPlugin
 						plane,
 						createdCount);
 				}
-			}
-
-			for (size_t candidate = 0; candidate < sourceCount; ++candidate) {
-				if (connected[candidate]) {
-					continue;
-				}
-				const WorldCoord dx = spacingSources[candidate].center.x - spacingSources[nextIndex].center.x;
-				const WorldCoord dy = spacingSources[candidate].center.y - spacingSources[nextIndex].center.y;
-				const double distanceSquared = dx * dx + dy * dy;
-				if (distanceSquared < nearestDistanceSquared[candidate]) {
-					nearestDistanceSquared[candidate] = distanceSquared;
-					nearestParent[candidate] = nextIndex;
-				}
-			}
 		}
 
 		if (createdCount > 0) {
@@ -2699,8 +3273,8 @@ bool CAutoDimensionObjDefTool_EventSink::DoSetUp(bool bRestore, const IToolModeB
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("创建标注", "创建模式：退出编辑功能，开始创建标注。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("转换标注", "将选中的对齐标注转换为转角（水平/垂直投影）尺寸。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("尺寸线剪齐", "将选中标注的尺寸界线剪齐到对象边界。", VectorWorks::eModeBarButtonType_RadioMode));
-	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("标注对齐", "将选中的标注对齐到同一条标注线。", VectorWorks::eModeBarButtonType_RadioMode));
-	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("标注分割和延伸", "分割或延伸选中标注的标注点。", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("标注对齐", "选择相互平行的尺寸，再单击目标尺寸线位置；插件会重建并对齐尺寸。", VectorWorks::eModeBarButtonType_RadioMode));
+	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("标注分割和延伸", "选择尺寸后点击尺寸轴：点在内部则分割，点在外部则延伸最近端点。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("修正文字方向", "修正选中标注的文字方向。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("修正标注点", "修正选中标注的标注点位置。", VectorWorks::eModeBarButtonType_RadioMode));
 	buttonHelp.Append(VectorWorks::SModeBarButtonHelp("合并标注", "将相邻的选中标注合并为连续标注。", VectorWorks::eModeBarButtonType_RadioMode));
@@ -2718,6 +3292,7 @@ void CAutoDimensionObjDefTool_EventSink::DoSetDown(bool bRestore, const IToolMod
 	VWTool_EventSink::DoSetDown(bRestore, pModeBarInitProvider);
 	fChainActive = false;
 	fChainCreatedCount = 0;
+	fChainOffset = 0.0;
 	fChainAngleValid = false;
 	fEditDimensions.clear();
 }
@@ -2740,6 +3315,7 @@ void CAutoDimensionObjDefTool_EventSink::DoModeEvent(size_t modeGroupID, size_t 
 		if (fAnnotationMode != kAnnotationQuickChain && fAnnotationMode != kAnnotationQuickChainAngle) {
 			fChainActive = false;
 			fChainCreatedCount = 0;
+			fChainOffset = 0.0;
 			fChainAngleValid = false;
 		}
 		VWAD_RUNTIME_TRACE("tool-annotation-mode changed=" + std::to_string(fAnnotationMode));
@@ -2811,7 +3387,9 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		if (fEditMode == kEditTrim && EndElevationPlaneWithAlert(editPlane, "尺寸线剪齐仅支持平面/非立面视图，当前为标准立面视图，请切换到平面视图后重试。")) {
 			return;
 		}
-		const size_t changedCount = EditSelectedDimensions(fEditMode, editPlane, selectedDimensions);
+		const VWPoint2D editClick = this->GetToolPt2D(0);
+		const size_t changedCount = EditSelectedDimensions(
+			fEditMode, editPlane, selectedDimensions, WorldPt(editClick.x, editClick.y));
 		ViewPlane::End(editPlane);
 		if (changedCount == 0) gSDK->AlertInform("无法编辑所选的尺寸标注对象。");
 		fEditDimensions.clear();
@@ -2891,6 +3469,7 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 			fChainAnchor = click;
 			fChainActive = true;
 			fChainCreatedCount = 0;
+			fChainOffset = 0.0;
 			VWAD_RUNTIME_TRACE(std::string("quick-chain anchor=") + FormatPoint(WorldPt(click.x, click.y)));
 			gSDK->AlertInform("快速连续标注：已锚定首点，点击下一点续接，ESC 结束。");
 			return;
@@ -2914,12 +3493,16 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 			// of re-triggering the alert against the stale anchor.
 			fChainActive = false;
 			fChainCreatedCount = 0;
+			fChainOffset = 0.0;
 			return;
 		}
 		size_t created = 0;
 		gSDK->SetUndoMethod(kUndoSwapObjects);
 		const SAutoDimSettings s = GetAutoDimSettings();
-		const WorldCoord offset = std::max<WorldCoord>(s.dimOffsetBase, len * s.dimOffsetRatio);
+		if (fChainOffset <= kGeometryTolerance) {
+			fChainOffset = std::max<WorldCoord>(s.dimOffsetBase, len * s.dimOffsetRatio);
+		}
+		const WorldCoord offset = fChainOffset;
 		if (std::abs(dx) >= std::abs(dy)) {
 			AddLinearDimension(fChainAnchor, WorldPt(click.x, fChainAnchor.y), -offset, Vector2(0.0, 0.0), kLinearDimensionTypeOrtho, "quickchain-h", plane, created);
 		}
@@ -2942,6 +3525,7 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 			fChainAnchor = click;
 			fChainActive = true;
 			fChainCreatedCount = 0;
+			fChainOffset = 0.0;
 			fChainAngleValid = false;
 			VWAD_RUNTIME_TRACE(std::string("angle-chain anchor=") + FormatPoint(WorldPt(click.x, click.y)));
 			gSDK->AlertInform("任意角度链：已锚定起点，点击下一点确定链方向，ESC 结束。");
@@ -2993,6 +3577,7 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		if (EndElevationPlaneWithAlert(plane, "任意角度链仅支持平面/非立面视图，当前为标准立面视图，请切换到平面视图后重试。")) {
 			fChainActive = false;
 			fChainCreatedCount = 0;
+			fChainOffset = 0.0;
 			fChainAngleValid = false;
 			return;
 		}
@@ -3000,7 +3585,10 @@ void CAutoDimensionObjDefTool_EventSink::HandleComplete()
 		gSDK->SetUndoMethod(kUndoSwapObjects);
 		// Negative offset matches the aligned-dimension convention used by the continuous
 		// and virtual-line-intersection modes (same sign/side as those verified paths).
-		const WorldCoord offset = -std::max<WorldCoord>(s.dimOffsetBase, segmentLength * s.dimOffsetRatio);
+		if (fChainOffset <= kGeometryTolerance) {
+			fChainOffset = std::max<WorldCoord>(s.dimOffsetBase, segmentLength * s.dimOffsetRatio);
+		}
+		const WorldCoord offset = -fChainOffset;
 		AddLinearDimension(segmentStart, segmentEnd, offset, fChainAngle, kLinearDimensionTypeAligned, "angle-chain", plane, created);
 		if (created > 0) {
 			gSDK->EndUndoEvent();
@@ -3207,6 +3795,7 @@ Sint32 CAutoDimensionObjDefTool_EventSink::OnDefaultEvent(ToolMessage* message)
 			const bool wasAngleChain = fChainAngleValid;
 			fChainActive = false;
 			fChainCreatedCount = 0;
+			fChainOffset = 0.0;
 			fChainAngleValid = false;
 			gSDK->AlertInform(wasAngleChain ? "任意角度链已结束。" : "快速连续标注已结束。");
 			return kToolSpecialKeyEventHandled;
