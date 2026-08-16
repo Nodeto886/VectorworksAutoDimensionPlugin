@@ -25,9 +25,58 @@ on:
 permissions:
   contents: read
 
+# --- SDK-independent jobs ---------------------------------------------------
+# These run on stock ubuntu CI with no Windows VW SDK and no cmake. They give
+# real green coverage for the parts of the codebase that do not require the
+# licensed SDK or the Vectorworks host runtime.
+
 jobs:
-  test:
+  # Pure-algorithm C++ unit tests. tests/AutoDimensionAlgorithmsTests.cpp depends
+  # only on the pure-stdlib include/vwad/AutoDimensionAlgorithms.h, so it compiles
+  # with plain g++ — no VW SDK, no cmake.
+  unit-tests:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run algorithm unit tests
+        run: |
+          g++ -std=c++17 -O2 -I include tests/AutoDimensionAlgorithmsTests.cpp -o /tmp/algo_tests
+          /tmp/algo_tests
+
+  # Numerical regression of the virtual-line-intersection geometry. Pure-python
+  # replica of the production math (tools/test_autodim_geometry.py) — no SDK and
+  # no build artifacts required.
+  numeric-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run numerical regression tests
+        run: python3 tools/test_autodim_geometry.py
+
+  # Dual-version (2025/2026) source consistency gate.
+  # Pure stdlib text check — needs NO Windows VW SDK, so it runs green
+  # independently of the SDK-dependent build (which cannot run in stock CI).
+  source-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run dual-version source invariant gate
+        run: python3 tests/test_sdk_source_invariants.py --source-2025 sdk-projects/2025/AutoDimensionPlugin/Source/AutoDimensionObj.cpp --source-2026 sdk-projects/2026/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
+
+  # Full plugin build + CTest. Requires the licensed Windows VW SDK + MSVC, so it
+  # is gated OFF by default and only runs when repository variable
+  # VW_SDK_AVAILABLE is set to 'true' (e.g. on a self-hosted Windows runner that
+  # has the SDK installed and VWSDKROOT pointing at it). On stock CI this job is
+  # skipped, keeping the workflow green instead of failing on a missing SDK.
+  sdk-build:
+    runs-on: windows-latest
+    if: ${{ vars.VW_SDK_AVAILABLE == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,21 +89,3 @@ jobs:
 
       - name: Run C++ tests
         run: ctest --test-dir build/test --output-on-failure
-
-      - name: Run numerical regression tests
-        run: python3 tools/test_autodim_geometry.py
-
-  # Dual-version (2025/2026) source consistency gate.
-  # Pure stdlib text check — needs NO Windows VW SDK, so it runs green
-  # independently of the SDK-dependent `test` job above (which cannot build
-  # in CI without LibWin). Enforces: 2025/2026 sources stay byte-identical
-  # except version-stamped trace filenames, and neither writes dimension
-  # geometry through the non-public ovDimStartPt/ovDimEndPt selectors.
-  source-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run dual-version source invariant gate
-        run: python3 tests/test_sdk_source_invariants.py --source-2025 sdk-projects/2025/AutoDimensionPlugin/Source/AutoDimensionObj.cpp --source-2026 sdk-projects/2026/AutoDimensionPlugin/Source/AutoDimensionObj.cpp
