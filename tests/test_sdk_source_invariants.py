@@ -34,9 +34,36 @@ def require(condition: bool, message: str) -> None:
 
 
 def function_body(source: str, name: str) -> str:
-    start = source.find(name)
+    # Anchor on the *definition*, not a call site. These helpers are file-local
+    # `static` functions declared as `[static ]<ret-type> <name>(`, so we match
+    # that declaration form (a return type / `static` preceding the name) rather
+    # than a bare `<name>(`, which could match a call site that appears earlier
+    # in the file and silently extract the wrong code block. If the declaration
+    # form is not found (an unexpected signature shape), fall back to the first
+    # occurrence so we never regress to a hard failure.
+    declaration = re.search(
+        r"^\s*(?:static\s+)?[A-Za-z_]\w*\s*" + re.escape(name) + r"\s*\(",
+        source,
+        re.M,
+    )
+    start = declaration.start() if declaration is not None else source.find(name)
     require(start >= 0, f"missing function: {name}")
-    brace = source.find("{", start)
+    # Skip the parameter list (matching '(' … ')') so we find the body's '{',
+    # not a '{' nested inside a default argument.
+    paren = source.find("(", start)
+    require(paren >= 0, f"missing signature parentheses: {name}")
+    depth = 0
+    index = paren
+    while index < len(source):
+        char = source[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        index += 1
+    brace = source.find("{", index)
     require(brace >= 0, f"missing function body: {name}")
     depth = 0
     for index in range(brace, len(source)):
@@ -57,10 +84,25 @@ def main() -> None:
 
     source_2025 = args.source_2025.read_text(encoding="utf-8")
     source_2026 = args.source_2026.read_text(encoding="utf-8")
-    normalized_2025 = source_2025.replace("vw-autodim-runtime-2025.txt", "vw-autodim-runtime-VERSION.txt")
-    normalized_2026 = source_2026.replace("vw-autodim-runtime-2026.txt", "vw-autodim-runtime-VERSION.txt")
-    normalized_2025 = normalized_2025.replace("vw-autodim-align-2025.txt", "vw-autodim-align-VERSION.txt")
-    normalized_2026 = normalized_2026.replace("vw-autodim-align-2026.txt", "vw-autodim-align-VERSION.txt")
+    # Only these version-stamped trace filenames are ALLOWED to differ between
+    # the 2025 and 2026 sources; every other byte must be byte-identical. We do
+    # NOT blanket-replace every '2025'/'2026' (that would also mask real
+    # differences such as a copyright year or a hardcoded constant). To add a new
+    # version-stamped artifact, extend this allowlist explicitly — an unlisted
+    # 2025/2026 difference is a real drift and must fail the gate.
+    version_stamped_files = (
+        "vw-autodim-runtime-{v}.txt",
+        "vw-autodim-align-{v}.txt",
+    )
+
+    def normalize_version_stamps(text: str) -> str:
+        for pattern in version_stamped_files:
+            for version in ("2025", "2026"):
+                text = text.replace(pattern.format(v=version), pattern.format(v="VERSION"))
+        return text
+
+    normalized_2025 = normalize_version_stamps(source_2025)
+    normalized_2026 = normalize_version_stamps(source_2026)
     require(normalized_2025 == normalized_2026, "2025 and 2026 implementations have drifted")
 
     require("{ ovDimStartPt," not in source_2025 and "{ ovDimEndPt," not in source_2025,
