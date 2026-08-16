@@ -1,0 +1,45 @@
+name: Test standalone geometry
+
+on:
+  push:
+    branches: [main, codex/**]
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/vwad/**'
+      - 'src/AutoDimensionGeometry.cpp'
+      - 'sdk-projects/**'
+      - 'tests/**'
+      - 'tools/test_autodim_geometry.py'
+      - '.github/workflows/test.yml'
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/vwad/**'
+      - 'src/AutoDimensionGeometry.cpp'
+      - 'sdk-projects/**'
+      - 'tests/**'
+      - 'tools/test_autodim_geometry.py'
+      - '.github/workflows/test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build/test -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/test --parallel
+
+      - name: Run C++ tests
+        run: ctest --test-dir build/test --output-on-failure
+
+      - name: Run numerical regression tests
+        run: python3 tools/test_autodim_geometry.py
