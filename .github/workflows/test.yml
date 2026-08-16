@@ -82,7 +82,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build/test -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+        # Vectorworks is a 64-bit host, so plugins MUST build as x64. Without
+        # -A x64 the VS generator defaults to Win32 and links against the wrong
+        # (32-bit) SDK libs, failing at link time.
+        run: cmake -S . -B build/test -A x64 -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build/test --parallel

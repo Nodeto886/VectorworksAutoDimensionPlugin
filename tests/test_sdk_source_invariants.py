@@ -14,9 +14,9 @@ from __future__ import annotations
 # on current HEAD.
 #
 # It is wired into CI as the standalone `source-gate` job in
-# .github/workflows/test.yml (independent of the SDK-dependent `test` job, which
-# cannot build in CI without the Windows VW SDK). The job runs this script with
-# the exact command shown below.
+# .github/workflows/test.yml (independent of the SDK-dependent `sdk-build` job,
+# which cannot build in CI without the Windows VW SDK). The job runs this script
+# with the exact command shown below.
 #
 # Run manually today with:
 #   python3 tests/test_sdk_source_invariants.py \
