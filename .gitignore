@@ -21,3 +21,7 @@ dist/mac/
 .sdk-stage-*/
 StdAfx.i
 *-admin.log
+.workbuddy/
+resources/*.credentials.json
+resources/Credentials*.json
+!resources/*.credentials.json.template
