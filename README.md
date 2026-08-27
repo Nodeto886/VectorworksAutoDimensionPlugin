@@ -84,7 +84,14 @@
 
 ## 自动化测试
 
-独立几何层使用 CTest，交线与转换算法另有纯 Python 数值回归：
+所有不依赖 Vectorworks 运行时的门禁可一键运行（CTest、Python 数值回归、双版本源一致性、g++ 编译检查、可选真实插件 MSBuild）：
+
+```powershell
+.\scripts\run-tests.ps1            # 全部门禁（含真实 MSBuild）
+.\scripts\run-tests.ps1 -SkipBuild # 快速门禁（跳过真实 MSBuild）
+```
+
+独立几何层使用 CTest，交线与转换算法另有纯 Python 数值回归，算法核心另加随机属性/差分测试：
 
 ```powershell
 cmake -S . -B build/test -DBUILD_TESTING=ON
@@ -92,6 +99,12 @@ cmake --build build/test --config Release
 ctest --test-dir build/test -C Release --output-on-failure
 python tools/test_autodim_geometry.py
 ```
+
+覆盖内容包括：
+
+- CTest：几何定义、命名/退化边界；算法 V2 的尺度容差、主方向、凸包、包围盒、空间哈希、路径拓扑、稳健求交、椭圆/圆弧交线、区间车道、中心生成树、文字布局、集合覆盖和代表边选择。
+- 随机属性测试（`tests/AutoDimensionAlgorithmsPropertyTests.cpp`，固定种子可复现）：凸包包含性与凸性、包围盒包含性与面积下界、旋转/平移/缩放变形不变性、主方向旋转等变性、交点落在两条线段上且顺序无关、椭圆方程精确满足、同车道区间互不相交、链边端点连续且无遗漏、集合覆盖必全覆盖、文字布局平移等变性、退化/极端输入不崩溃不产 NaN。
+- Python 数值回归：独立线性系统差分对拍、去重后交点集合与暴力参考一致、平移/缩放不变性、退化输入健壮性。
 
 这些测试会在 GitHub Actions 中独立运行，不需要 Vectorworks SDK。完整插件仍需使用上面的双版本 Release 构建验证。
 

@@ -26,6 +26,10 @@ if(BUILD_TESTING)
         tests/AutoDimensionAlgorithmsTests.cpp
     )
 
+    add_executable(vwad_algorithm_property_tests
+        tests/AutoDimensionAlgorithmsPropertyTests.cpp
+    )
+
     target_link_libraries(vwad_geometry_tests
         PRIVATE
             vwad_geometry
@@ -36,11 +40,22 @@ if(BUILD_TESTING)
             vwad_geometry
     )
 
+    target_link_libraries(vwad_algorithm_property_tests
+        PRIVATE
+            vwad_geometry
+    )
+
     add_test(NAME vwad_geometry_tests COMMAND vwad_geometry_tests)
     add_test(NAME vwad_algorithm_tests COMMAND vwad_algorithm_tests)
+    add_test(NAME vwad_algorithm_property_tests COMMAND vwad_algorithm_property_tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME vwad_geometry_python_regression
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_autodim_geometry.py
+        )
         add_test(
             NAME vwad_sdk_source_invariants
             COMMAND ${Python3_EXECUTABLE}

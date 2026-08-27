@@ -241,8 +241,13 @@ inline std::vector<Point2> convexHull(
 
     std::vector<Point2> hull;
     hull.reserve(points.size() * 2);
-    const auto append = [&](const Point2& point, std::vector<Point2>& output) {
-        while (output.size() >= 2) {
+    // append runs a monotone chain from the given minimum kept size: the lower
+    // pass may pop down to a single point, but the upper pass must not pop
+    // below the completed lower hull (index lowerSize) or it silently drops
+    // rightmost vertices when the first upper point turns clockwise against the
+    // lower hull's last edge.
+    const auto append = [&](const Point2& point, std::vector<Point2>& output, std::size_t minimumSize) {
+        while (output.size() > minimumSize) {
             const Point2 a = output[output.size() - 2];
             const Point2 b = output.back();
             const Point2 first = b - a;
@@ -255,9 +260,9 @@ inline std::vector<Point2> convexHull(
         }
         output.push_back(point);
     };
-    for (const Point2& point : points) append(point, hull);
+    for (const Point2& point : points) append(point, hull, 1);
     const std::size_t lowerSize = hull.size();
-    for (std::size_t index = points.size() - 1; index-- > 0;) append(points[index], hull);
+    for (std::size_t index = points.size() - 1; index-- > 0;) append(points[index], hull, lowerSize);
     if (hull.size() > lowerSize) hull.pop_back();
     return hull;
 }
@@ -846,15 +851,24 @@ inline std::vector<std::size_t> selectCoveringCandidates(
     }
 
     for (std::size_t position = selected.size(); position-- > 0;) {
-        std::vector<std::size_t> counts(featureCount, 0);
+        // For each feature, remember which distinct selected candidates cover it.
+        // The pruning rule needs "covered by some *other* candidate", so the
+        // per-feature count must be over distinct selected candidates, not over
+        // candidate feature-list entries: a candidate whose own list repeats a
+        // feature (e.g. {3,0,0,0}) must not look self-covered.
+        std::vector<std::vector<std::size_t>> coverers(featureCount);
         for (std::size_t selectedIndex : selected) {
             for (std::size_t feature : candidates[selectedIndex].features) {
-                if (feature < featureCount) ++counts[feature];
+                if (feature < featureCount &&
+                    std::find(coverers[feature].begin(), coverers[feature].end(), selectedIndex) ==
+                        coverers[feature].end()) {
+                    coverers[feature].push_back(selectedIndex);
+                }
             }
         }
         bool redundant = true;
         for (std::size_t feature : candidates[selected[position]].features) {
-            if (feature < featureCount && counts[feature] <= 1) { redundant = false; break; }
+            if (feature < featureCount && coverers[feature].size() < 2) { redundant = false; break; }
         }
         if (redundant) selected.erase(selected.begin() + static_cast<std::ptrdiff_t>(position));
     }

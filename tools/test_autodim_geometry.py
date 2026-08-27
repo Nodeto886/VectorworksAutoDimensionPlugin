@@ -421,6 +421,167 @@ def test_convert_negative_direction():
     assert convert_projection_end((2.0, 7.0), (1.0, 1.0)) == (2.0, 1.0)   # vertical
 
 
+# --- randomized property / differential tests --------------------------------
+
+import random
+
+_RNG = random.Random(0xAD_A1D_2F)
+
+
+def _random_points(n):
+    return [(_RNG.uniform(-1000.0, 1000.0), _RNG.uniform(-1000.0, 1000.0)) for _ in range(n)]
+
+
+def _random_virtual_line():
+    return _random_points(2)
+
+
+def _random_segments(n):
+    return [tuple(_random_points(2)) for _ in range(n)]
+
+
+def _points_equal(a, b, tol=1e-6):
+    return math.hypot(a[0] - b[0], a[1] - b[1]) <= tol
+
+
+def _on_segment(p, seg, tol=1e-6):
+    s, e = seg
+    dx, dy = e[0] - s[0], e[1] - s[1]
+    length = math.hypot(dx, dy)
+    if length <= 1e-9:
+        return _points_equal(p, s, tol)
+    t = ((p[0] - s[0]) * dx + (p[1] - s[1]) * dy) / (length * length)
+    if t < -1e-9 or t > 1.0 + 1e-9:
+        return False
+    proj = (s[0] + t * dx, s[1] + t * dy)
+    return _points_equal(p, proj, tol)
+
+
+def _independent_intersection(first, v, seg):
+    """Independent reference: solve the 2x2 system, no shared code path."""
+    s, e = seg
+    sd = (e[0] - s[0], e[1] - s[1])
+    vx, vy = v
+    det = sd[0] * vy - vx * sd[1]
+    if abs(det) <= K_GEOMETRY_TOLERANCE * math.hypot(vx, vy) * math.hypot(*sd):
+        return None
+    q = (s[0] - first[0], s[1] - first[1])
+    t = (sd[0] * q[1] - q[0] * sd[1]) / det
+    u = (vx * q[1] - q[0] * vy) / det
+    if t < -K_GEOMETRY_TOLERANCE or t > 1.0 + K_GEOMETRY_TOLERANCE:
+        return None
+    if u < -K_GEOMETRY_TOLERANCE or u > 1.0 + K_GEOMETRY_TOLERANCE:
+        return None
+    return (first[0] + t * vx, first[1] + t * vy)
+
+
+@test_case
+def test_random_intersections_match_independent_reference():
+    # Differential test: the replica's intersection must agree with an
+    # independent linear-system solve, and the reported point must lie on both
+    # the virtual line and the candidate segment.
+    for _ in range(200):
+        first, second = _random_virtual_line()
+        v = (second[0] - first[0], second[1] - first[1])
+        if math.hypot(*v) <= K_GEOMETRY_TOLERANCE:
+            continue
+        for seg in _random_segments(1):
+            hit = segment_intersection(first, v, seg[0], seg[1])
+            reference = _independent_intersection(first, v, seg)
+            if reference is None:
+                assert hit is None, "replica found an intersection the reference rejects"
+            else:
+                assert hit is not None, "replica missed an intersection the reference accepts"
+                _t, _u, point = hit
+                assert _points_equal(point, reference), "intersection point differs from reference"
+                assert _on_segment(point, (first, second)), "intersection is on the virtual line"
+                assert _on_segment(point, seg), "intersection is on the candidate segment"
+
+
+@test_case
+def test_random_collect_count_matches_brute_force():
+    # For random virtual lines and segments, the production collect (with dedup
+    # and projection sort) must produce exactly the set of independent
+    # intersections that survive the relative duplicate filter.
+    for _ in range(100):
+        first, second = _random_virtual_line()
+        v = (second[0] - first[0], second[1] - first[1])
+        if math.hypot(*v) <= K_GEOMETRY_TOLERANCE:
+            continue
+        segments = _random_segments(_RNG.randint(0, 20))
+        points = collect_intersections(first, second, segments)
+        length = math.hypot(*v)
+        reference = []
+        for seg in segments:
+            hit = _independent_intersection(first, v, seg)
+            if hit is None:
+                continue
+            if is_duplicate_of_any(hit, reference, length):
+                continue
+            reference.append(hit)
+        if len(reference) < 2:
+            reference = []
+        reference.sort(key=lambda p: (p[0] - first[0]) * v[0] + (p[1] - first[1]) * v[1])
+        assert len(points) == len(reference), "collected count differs from brute-force reference"
+        for got, want in zip(points, reference):
+            assert _points_equal(got, want), "collected point differs from brute-force reference"
+
+
+@test_case
+def test_random_translation_invariance():
+    # Translating every coordinate must leave the intersection count and the
+    # relative projection ordering unchanged.
+    for _ in range(100):
+        first, second = _random_virtual_line()
+        v = (second[0] - first[0], second[1] - first[1])
+        if math.hypot(*v) <= K_GEOMETRY_TOLERANCE:
+            continue
+        segments = _random_segments(_RNG.randint(0, 15))
+        delta = (_RNG.uniform(-1e6, 1e6), _RNG.uniform(-1e6, 1e6))
+        shifted_segments = [((s[0] + delta[0], s[1] + delta[1]), (e[0] + delta[0], e[1] + delta[1])) for s, e in segments]
+        base = collect_intersections(first, second, segments)
+        shifted = collect_intersections((first[0] + delta[0], first[1] + delta[1]),
+                                        (second[0] + delta[0], second[1] + delta[1]),
+                                        shifted_segments)
+        assert len(base) == len(shifted), "translation changed the intersection count"
+
+
+@test_case
+def test_random_scale_stability():
+    # Uniform scaling of the drawing should preserve the count and the relative
+    # ordering (dedup tolerance is length-relative, so no accidental merges).
+    for _ in range(100):
+        first, second = _random_virtual_line()
+        v = (second[0] - first[0], second[1] - first[1])
+        if math.hypot(*v) <= K_GEOMETRY_TOLERANCE:
+            continue
+        segments = _random_segments(_RNG.randint(0, 15))
+        factor = _RNG.uniform(1e-3, 1e3)
+        scaled_segments = [((s[0] * factor, s[1] * factor), (e[0] * factor, e[1] * factor)) for s, e in segments]
+        base = collect_intersections(first, second, segments)
+        scaled = collect_intersections((first[0] * factor, first[1] * factor),
+                                       (second[0] * factor, second[1] * factor),
+                                       scaled_segments)
+        assert len(base) == len(scaled), "uniform scale changed the intersection count"
+
+
+@test_case
+def test_random_no_crash_on_degenerate():
+    # Degenerate and extreme inputs must never crash the replica.
+    for _ in range(200):
+        if _RNG.random() < 0.5:
+            first, second = (0.0, 0.0), (0.0, 0.0)
+        else:
+            first, second = _random_virtual_line()
+        segments = _random_segments(_RNG.randint(0, 10))
+        segments = segments + [((1e12, 1e12), (1e12, 1e12)),
+                               ((1e-12, 1e-12), (1e-12, 1e-12)),
+                               ((5.0, 0.0), (5.0, 0.0))]
+        points = collect_intersections(first, second, segments)
+        for point in points:
+            assert all(math.isfinite(c) for c in point), "intersection is finite"
+
+
 # --- runner -------------------------------------------------------------------
 
 def main():

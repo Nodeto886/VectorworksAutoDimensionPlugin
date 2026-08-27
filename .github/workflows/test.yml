@@ -44,6 +44,8 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -I include tests/AutoDimensionAlgorithmsTests.cpp -o /tmp/algo_tests
           /tmp/algo_tests
+          g++ -std=c++17 -O2 -I include tests/AutoDimensionAlgorithmsPropertyTests.cpp -o /tmp/algo_property_tests
+          /tmp/algo_property_tests
 
   # Numerical regression of the virtual-line-intersection geometry. Pure-python
   # replica of the production math (tools/test_autodim_geometry.py) — no SDK and
